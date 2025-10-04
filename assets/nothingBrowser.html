@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nothing Browser</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* MODIFIED: Ensure both html and body are transparent from the start. */
+        html {
+            background-color: transparent;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent; /* Disable tap highlight */
+            background-color: transparent; /* Base transparency */
+        }
+        /* Custom scrollbar for webview content */
+        iframe::-webkit-scrollbar { width: 8px; }
+        iframe::-webkit-scrollbar-track { background: #1a1a1a; }
+        iframe::-webkit-scrollbar-thumb {
+            background-color: #4a4a4a;
+            border-radius: 10px;
+            border: 2px solid #1a1a1a;
+        }
+        /* Hide scrollbar for tabs container */
+        #tabs-container::-webkit-scrollbar { display: none; }
+        #tabs-container { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .glass-widget {
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(1.5rem);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 0 40px rgba(0,0,0,0.5);
+        }
+        #home-background {
+            background-color: #000000;
+            background-image:
+                radial-gradient(ellipse at 20% 25%, rgba(160, 160, 160, 0.4) 0%, rgba(0,0,0,0) 70%),
+                radial-gradient(ellipse at 80% 75%, rgba(140, 140, 140, 0.4) 0%, rgba(0,0,0,0) 70%);
+        }
+    </style>
+</head>
+<body class="text-white">
+
+<!-- Background Gradient -->
+<div id="home-background" class="absolute inset-0 -z-10"></div>
+
+<!-- Toast Notification -->
+<div id="toast" class="fixed top-5 left-1/2 -translate-x-1/2 bg-zinc-800 text-white px-4 py-2 rounded-full text-sm z-50 opacity-0 transition-opacity duration-300">
+    Link copied to clipboard!
+</div>
+
+<!-- Home Screen Container -->
+<div id="home-screen" class="w-full h-full p-4 pt-8 overflow-y-auto">
+    <div class="max-w-md mx-auto flex flex-col gap-4 pb-48">
+        <h1 class="text-2xl font-bold px-2">Home Screen</h1>
+        <!-- Quick Note & Music Player -->
+        <div class="grid grid-cols-2 gap-4">
+            <div class="glass-widget rounded-3xl p-4 flex flex-col justify-between aspect-square">
+                <div class="flex items-start gap-3">
+                    <img src="https://placehold.co/64x64/1a1a1a/ffffff?text=🎵" alt="Album Art" class="rounded-lg w-14 h-14">
+                    <div class="flex-1 overflow-hidden">
+                        <h3 class="font-semibold">Music Player</h3>
+                        <p id="song-title" class="text-sm font-medium truncate text-white/90">Song Title</p>
+                        <p id="song-artist" class="text-xs text-white/60 truncate">Artist Name</p>
+                    </div>
+                </div>
+                <div class="text-center">
+                    <div class="flex items-center justify-center gap-5 mt-2">
+                        <button class="text-white/70 hover:text-white transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg></button>
+                        <button class="text-white bg-white/20 p-4 rounded-full hover:bg-white/30 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                        <button class="text-white/70 hover:text-white transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg></button>
+                    </div>
+                </div>
+            </div>
+            <div class="glass-widget rounded-3xl p-4 flex flex-col justify-between aspect-square">
+                <h3 class="font-semibold">Quick Note</h3>
+                <textarea id="quick-note-textarea" class="bg-transparent text-sm text-white/70 w-full h-full resize-none focus:outline-none placeholder-white/50" placeholder="Add another note..."></textarea>
+            </div>
+        </div>
+        <!-- Quick AI -->
+        <div class="glass-widget rounded-3xl p-4">
+            <h3 class="font-semibold mb-3">Quick AI Access</h3>
+            <div id="quick-ai-grid" class="grid grid-cols-3 gap-3">
+                <!-- AI Links will be injected here -->
+            </div>
+        </div>
+        <!-- Favourites -->
+        <div class="glass-widget rounded-3xl p-4">
+            <h3 class="font-semibold mb-3">Favourites</h3>
+            <div id="favourites-grid" class="grid grid-cols-4 gap-4">
+                <!-- Favourites will be injected here -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- This container is now just a visibility toggle controlled by JS -->
+<div id="browser-view" class="hidden"></div>
+
+<!-- Tab Manager Screen -->
+<div id="tab-manager-screen" class="hidden fixed inset-0 bg-black/50 backdrop-blur-2xl p-4 pt-8 text-white overflow-y-auto z-40">
+    <div class="max-w-md mx-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h2 class="text-2xl font-bold">Tabs</h2>
+            <button id="close-tab-manager-btn" class="p-2 rounded-full hover:bg-white/10 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div id="tab-grid" class="grid grid-cols-2 gap-4 pb-32">
+            <!-- Tab previews will be injected here by JS -->
+        </div>
+    </div>
+</div>
+
+<!-- Search Screen -->
+<div id="search-screen" class="hidden fixed inset-0 bg-black p-4 pt-8 text-white z-40">
+    <div class="max-w-md mx-auto flex flex-col h-full">
+        <div class="relative">
+            <div class="flex items-center gap-2 bg-zinc-800 rounded-full px-4 py-3">
+                <button id="search-provider-btn" class="p-1 rounded-full hover:bg-zinc-700">
+                    <img id="search-provider-icon" src="https://www.google.com/s2/favicons?sz=32&domain_url=google.com" class="w-5 h-5">
+                </button>
+                <form id="search-form" class="w-full">
+                    <input type="text" id="search-input" placeholder="Search or type URL" class="w-full bg-transparent text-white placeholder-zinc-400 text-base focus:outline-none focus:ring-0">
+                </form>
+            </div>
+            <div id="search-provider-dropdown" class="hidden absolute left-0 mt-2 w-48 bg-zinc-800 rounded-2xl shadow-lg z-50 p-2">
+                <!-- Search providers will be injected here -->
+            </div>
+        </div>
+
+        <div class="grid grid-cols-4 gap-4 text-center my-8">
+            <div><button id="summarize-btn" class="bg-zinc-800 p-4 rounded-2xl inline-block"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.5A4.5 4.5 0 0 0 17.5 5c-.55 0-1 .45-1 1v2c0 .55.45 1 1 1h.5a2.5 2.5 0 0 1 0 5h-11a2.5 2.5 0 0 1 0-5H6a1 1 0 0 0 1-1V6c0-.55-.45-1-1-1a4.5 4.5 0 0 0-4.5 4.5c0 4.5 3 12.5 6 12.5 1.25 0 2.5-1.06 4-1.06Z"/><path d="M12 2v2"/><path d="M12 22v-2"/></svg></button><p class="text-xs mt-2 text-zinc-400">Summarize</p></div>
+            <div><button id="chat-ai-btn" class="bg-zinc-800 p-4 rounded-2xl inline-block"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20Z"/><path d="M8 12h8"/><path d="M12 8v8"/></svg></button><p class="text-xs mt-2 text-zinc-400">ChatAI</p></div>
+            <div><button id="send-btn" class="bg-zinc-800 p-4 rounded-2xl inline-block"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button><p class="text-xs mt-2 text-zinc-400">Send</p></div>
+            <div><button id="quick-note-btn" class="bg-zinc-800 p-4 rounded-2xl inline-block"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 2H6.6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10.8a2 2 0 0 0 2-2V7.4L13.4 2z"/><path d="M13 2v6h6"/><path d="M12 18v-6"/><path d="M9 15h6"/></svg></button><p class="text-xs mt-2 text-zinc-400">Quick Note</p></div>
+        </div>
+        <div id="search-suggestions" class="flex-grow overflow-y-auto flex flex-col gap-2">
+            <!-- Suggestions will be populated here -->
+        </div>
+    </div>
+</div>
+
+<!-- Floating Navigation Bar -->
+<div id="nav-bar" class="fixed bottom-4 left-1/2 -translate-x-1/2 w-11/12 max-w-lg z-50 transition-transform duration-300 ease-in-out">
+    <div class="glass-widget rounded-3xl shadow-2xl p-3 flex flex-col gap-2">
+        <!-- Tabs Container -->
+        <div class="flex items-center gap-2 px-1">
+            <div id="tabs-container" class="flex-1 flex items-center gap-2 overflow-x-auto">
+                <!-- Tabs will be injected here -->
+            </div>
+            <button id="add-tab-btn" class="text-white/70 hover:bg-white/10 p-2 rounded-full transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+        </div>
+        <!-- Search/URL Bar -->
+        <div id="url-bar-display" class="flex items-center gap-2 bg-black/40 rounded-full px-4 py-3">
+            <button id="search-btn">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-white/50"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            </button>
+            <div id="url-display" class="flex-1 text-center text-white/70 text-sm">Home</div>
+            <button id="show-tab-manager-btn" class="text-white/70 hover:text-white transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // DOM Elements
+    const homeScreen = document.getElementById('home-screen');
+    const homeBackground = document.getElementById('home-background');
+    const browserView = document.getElementById('browser-view');
+    const tabManagerScreen = document.getElementById('tab-manager-screen');
+    const searchScreen = document.getElementById('search-screen');
+    const urlBarDisplay = document.getElementById('url-bar-display');
+    const urlDisplay = document.getElementById('url-display');
+    const searchBtn = document.getElementById('search-btn');
+    const searchForm = document.getElementById('search-form');
+    const searchInput = document.getElementById('search-input');
+    const searchSuggestions = document.getElementById('search-suggestions');
+    const tabsContainer = document.getElementById('tabs-container');
+    const addTabBtn = document.getElementById('add-tab-btn');
+    const showTabManagerBtn = document.getElementById('show-tab-manager-btn');
+    const closeTabManagerBtn = document.getElementById('close-tab-manager-btn');
+    const tabGrid = document.getElementById('tab-grid');
+    const favouritesGrid = document.getElementById('favourites-grid');
+    const quickAiGrid = document.getElementById('quick-ai-grid');
+    const quickNoteTextarea = document.getElementById('quick-note-textarea');
+    const navBar = document.getElementById('nav-bar');
+    const searchProviderBtn = document.getElementById('search-provider-btn');
+    const searchProviderIcon = document.getElementById('search-provider-icon');
+    const searchProviderDropdown = document.getElementById('search-provider-dropdown');
+    const quickNoteBtn = document.getElementById('quick-note-btn');
+    const chatAiBtn = document.getElementById('chat-ai-btn');
+    const sendBtn = document.getElementById('send-btn');
+    const toast = document.getElementById('toast');
+
+    // App State
+    let state = {};
+
+    // --- Core Functions ---
+    function createNewTab(url = null, title = "New Tab") {
+        const newTab = { id: Date.now(), url: url, title: url ? getHostname(url) : title };
+        state.tabs.push(newTab);
+        saveState();
+        return newTab;
+    }
+
+    function setActiveTab(tabId) {
+        state.activeTabId = tabId;
+        const activeTab = state.tabs.find(t => t.id === tabId);
+
+        if (activeTab && activeTab.url && activeTab.url !== 'about:blank') {
+            if (window.FlutterBridge && window.FlutterBridge.postMessage) {
+                window.FlutterBridge.postMessage(activeTab.url);
+            }
+            showView('browser');
+        } else {
+            if (window.FlutterBridge && window.FlutterBridge.postMessage) {
+                window.FlutterBridge.postMessage('about:blank');
+            }
+            showView('home');
+        }
+        render();
+    }
+
+    function closeTab(tabId) {
+        const tabIndex = state.tabs.findIndex(t => t.id === tabId);
+        if (tabIndex === -1) return;
+        state.tabs.splice(tabIndex, 1);
+
+        if (state.activeTabId === tabId) {
+            if (state.tabs.length > 0) {
+                setActiveTab(state.tabs[Math.max(0, tabIndex - 1)].id);
+            } else {
+                const newTab = createNewTab();
+                setActiveTab(newTab.id);
+            }
+        } else {
+            saveState();
+            render();
+        }
+    }
+
+    function addFavourite(url, title) {
+        if (!url || !title || state.favourites.some(fav => fav.url === url)) return;
+        state.favourites.push({ url, title });
+        saveState();
+        render();
+    }
+
+    function addQuickAI(name, url) {
+        if (!name || !url || state.quickAI.some(ai => ai.url === url)) return;
+        state.quickAI.push({ name, url });
+        saveState();
+        render();
+    }
+
+    function addToHistory(url, title) {
+        if (!url || !title || url === 'about:blank') return;
+        state.history = state.history.filter(item => item.url !== url);
+        state.history.unshift({ url, title, timestamp: Date.now() });
+        if (state.history.length > 50) state.history.pop();
+        saveState();
+    }
+
+    function showView(viewName, isFromHistory = false) {
+         if (!isFromHistory && (viewName === 'search' || viewName === 'tabs')) {
+            history.pushState({view: viewName}, '', `#${viewName}`);
+        }
+        state.currentView = viewName;
+
+        homeScreen.classList.toggle('hidden', viewName !== 'home');
+        homeBackground.classList.toggle('hidden', viewName !== 'home');
+        browserView.classList.toggle('hidden', viewName !== 'browser');
+        navBar.classList.toggle('hidden', viewName === 'search' || viewName === 'tabs');
+        tabManagerScreen.classList.toggle('hidden', viewName !== 'tabs');
+        searchScreen.classList.toggle('hidden', viewName !== 'search');
+
+        if (viewName === 'search') {
+            searchInput.focus();
+            searchInput.select();
+            renderSearchSuggestions();
+        }
+    }
+
+    // --- Rendering ---
+    function render() {
+        renderUrlDisplay();
+        renderTabs();
+        renderTabGrid();
+        renderFavourites();
+        renderQuickAI();
+        renderSearchProviderDropdown();
+        quickNoteTextarea.value = state.note;
+    }
+
+    function renderUrlDisplay() {
+         const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+         if (activeTab && activeTab.url && activeTab.url !== 'about:blank') {
+            urlDisplay.textContent = activeTab.title;
+         } else {
+            urlDisplay.textContent = 'Home';
+         }
+    }
+
+    function renderTabs() {
+        tabsContainer.innerHTML = '';
+        state.tabs.forEach(tab => {
+            const isActive = tab.id === state.activeTabId;
+            const tabElement = document.createElement('button');
+            tabElement.className = `px-4 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors border ${isActive ? 'bg-white/20 text-white border-white/30' : 'bg-transparent text-white/70 hover:bg-white/10 border-white/10'}`;
+            tabElement.textContent = tab.title;
+            tabElement.onclick = () => setActiveTab(tab.id);
+            tabsContainer.appendChild(tabElement);
+            if (isActive) {
+                tabElement.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            }
+        });
+    }
+
+    function renderTabGrid() {
+        tabGrid.innerHTML = '';
+        state.tabs.forEach(tab => {
+            const tabPreview = document.createElement('div');
+            tabPreview.className = 'glass-widget rounded-2xl p-3 flex flex-col justify-between aspect-[9/16] relative';
+            tabPreview.onclick = () => { setActiveTab(tab.id); showView('browser'); };
+
+            const content = document.createElement('div');
+            content.className = 'flex-grow flex items-center justify-center';
+            const favicon = document.createElement('img');
+            favicon.src = `https://www.google.com/s2/favicons?sz=64&domain_url=${tab.url}`;
+            favicon.className = 'w-16 h-16 rounded-2xl';
+            favicon.onerror = () => { favicon.style.display = 'none'; };
+            content.appendChild(favicon);
+
+            const titleContainer = document.createElement('div');
+            titleContainer.className = 'flex items-center gap-2 mt-2';
+            const title = document.createElement('p');
+            title.className = 'text-sm truncate';
+            title.textContent = tab.title;
+            titleContainer.appendChild(title);
+
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'absolute top-2 right-2 p-1 rounded-full bg-black/30 hover:bg-black/50';
+            closeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+            closeBtn.onclick = (e) => { e.stopPropagation(); closeTab(tab.id); };
+
+            tabPreview.appendChild(content);
+            tabPreview.appendChild(titleContainer);
+            tabPreview.appendChild(closeBtn);
+            tabGrid.appendChild(tabPreview);
+        });
+    }
+
+    function renderSearchSuggestions(query = '') {
+        searchSuggestions.innerHTML = '';
+        const lowerCaseQuery = query.toLowerCase();
+        const suggestions = [...state.favourites, ...state.history]
+            .filter((item, index, self) => index === self.findIndex(t => t.url === item.url)) // Unique URLs
+            .filter(item => item.title.toLowerCase().includes(lowerCaseQuery) || item.url.toLowerCase().includes(lowerCaseQuery))
+            .slice(0, 10);
+
+        suggestions.forEach(item => {
+             const suggestion = document.createElement('button');
+             suggestion.className = 'w-full flex items-center gap-4 text-left p-3 rounded-2xl hover:bg-zinc-800';
+             suggestion.onclick = () => { loadUrlInActiveTab(item.url); };
+             const favicon = document.createElement('img');
+             favicon.className = 'w-6 h-6';
+             favicon.src = `https://www.google.com/s2/favicons?sz=32&domain_url=${item.url}`;
+             suggestion.appendChild(favicon);
+             const text = document.createElement('span');
+             text.textContent = item.title;
+             suggestion.appendChild(text);
+             searchSuggestions.appendChild(suggestion);
+        });
+    }
+
+    function renderQuickAI() {
+        if (!quickAiGrid || !state.quickAI) return;
+        quickAiGrid.innerHTML = '';
+        state.quickAI.forEach(ai => {
+            const aiLink = document.createElement('button');
+            aiLink.className = 'bg-black/40 rounded-xl p-2 flex items-center justify-center gap-2 text-sm';
+            aiLink.onclick = () => { loadUrlInNewTab(ai.url); };
+
+            const favicon = document.createElement('img');
+            favicon.className = 'w-6 h-6';
+            favicon.src = `https://www.google.com/s2/favicons?sz=32&domain_url=${ai.url}`;
+            aiLink.appendChild(favicon);
+            aiLink.append(ai.name);
+            quickAiGrid.appendChild(aiLink);
+        });
+        const addButton = document.createElement('button');
+        addButton.className = 'bg-black/40 rounded-xl p-2 flex items-center justify-center gap-2 text-sm text-white/50 hover:bg-white/10 hover:text-white transition-colors';
+        addButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Add AI</span>`;
+        addButton.onclick = () => {
+            const name = prompt("Enter AI name (e.g., Perplexity):");
+            const url = prompt("Enter AI URL (e.g., https://perplexity.ai):");
+            if(name && url) addQuickAI(name, url);
+        };
+        quickAiGrid.appendChild(addButton);
+    }
+
+    function renderFavourites() {
+        favouritesGrid.innerHTML = '';
+        state.favourites.forEach(fav => {
+            const favElement = document.createElement('button');
+            favElement.className = 'bg-black/40 rounded-full aspect-square flex items-center justify-center';
+            favElement.onclick = () => { loadUrlInNewTab(fav.url, fav.title); };
+            const favicon = document.createElement('img');
+            favicon.className = 'w-10 h-10 rounded-full';
+            favicon.src = `https://www.google.com/s2/favicons?sz=64&domain_url=${fav.url}`;
+            favicon.alt = fav.title;
+            favicon.onerror = () => { favElement.innerHTML = `<span class="text-xl font-bold">${fav.title.charAt(0).toUpperCase()}</span>`; };
+            favElement.appendChild(favicon);
+            favouritesGrid.appendChild(favElement);
+        });
+        const addButton = document.createElement('button');
+        addButton.className = 'bg-black/40 rounded-full aspect-square flex items-center justify-center text-white/50 hover:bg-white/10 hover:text-white transition-colors';
+        addButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+        addButton.onclick = () => {
+            const newUrl = prompt("Enter website URL to add to favourites:");
+            if (newUrl) addFavourite(newUrl, getHostname(newUrl));
+        };
+        favouritesGrid.appendChild(addButton);
+    }
+
+    function renderSearchProviderDropdown() {
+        searchProviderDropdown.innerHTML = '';
+        state.searchProviders.forEach((provider, index) => {
+            const item = document.createElement('button');
+            item.className = 'w-full flex items-center gap-3 p-2 rounded-lg hover:bg-zinc-700';
+            item.onclick = () => {
+                state.activeSearchProviderIndex = index;
+                searchProviderIcon.src = provider.icon;
+                searchProviderDropdown.classList.add('hidden');
+                saveState();
+            };
+            item.appendChild(Object.assign(document.createElement('img'), {src: provider.icon, className: 'w-5 h-5'}));
+            item.appendChild(Object.assign(document.createElement('span'), {textContent: provider.name}));
+            searchProviderDropdown.appendChild(item);
+        });
+    }
+
+    // --- Event Listeners & URL Handling ---
+    function loadUrlInActiveTab(url) {
+        const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+        if (activeTab) {
+            activeTab.url = url;
+            activeTab.title = getHostname(url);
+            setActiveTab(activeTab.id);
+        } else {
+            loadUrlInNewTab(url);
+        }
+    }
+
+    function loadUrlInNewTab(url, title) {
+        const newTab = createNewTab(url, title);
+        setActiveTab(newTab.id);
+    }
+
+    searchForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        let query = searchInput.value.trim();
+        if (!query) return;
+
+        let url;
+        if (!/^(https?:\/\/)/i.test(query) && query.includes('.') && !query.includes(' ')) {
+            url = 'https://' + query;
+        } else if (/^(https?:\/\/)/i.test(query)) {
+            url = query;
+        } else {
+            const provider = state.searchProviders[state.activeSearchProviderIndex];
+            url = provider.url.includes('%s')
+                ? provider.url.replace('%s', encodeURIComponent(query))
+                : provider.url + encodeURIComponent(query);
+        }
+        loadUrlInActiveTab(url);
+    });
+
+    searchInput.addEventListener('input', () => renderSearchSuggestions(searchInput.value));
+    quickNoteTextarea.addEventListener('input', (e) => { state.note = e.target.value; saveState(); });
+    urlBarDisplay.addEventListener('click', () => showView('search'));
+    searchProviderBtn.addEventListener('click', (e) => { e.stopPropagation(); searchProviderDropdown.classList.toggle('hidden'); });
+    quickNoteBtn.addEventListener('click', () => { showView('home'); setTimeout(() => quickNoteTextarea.focus(), 50); });
+    chatAiBtn.addEventListener('click', () => { /* Add Chat AI functionality here */ });
+    sendBtn.addEventListener('click', () => { /* Add Send/Share functionality here */ });
+    document.addEventListener('click', (e) => { if (!searchProviderBtn.contains(e.target)) searchProviderDropdown.classList.add('hidden'); });
+    addTabBtn.addEventListener('click', () => { const newTab = createNewTab(); setActiveTab(newTab.id); });
+    showTabManagerBtn.addEventListener('click', (e) => { e.stopPropagation(); showView('tabs'); });
+    closeTabManagerBtn.addEventListener('click', () => history.back());
+    window.addEventListener('popstate', () => {
+        const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+        const view = (activeTab && activeTab.url && activeTab.url !== 'about:blank') ? 'browser' : 'home';
+        showView(view, true);
+    });
+
+    // --- State Management ---
+    function saveState() {
+        localStorage.setItem('nothingBrowserState', JSON.stringify(state));
+    }
+
+    function loadState() {
+        const savedState = localStorage.getItem('nothingBrowserState');
+        const defaultState = {
+            tabs: [], activeTabId: null,
+            favourites: [ { url: 'https://youtube.com', title: 'YouTube' }, { url: 'https://www.reddit.com', title: 'Reddit' } ],
+            quickAI: [ { name: 'ChatGPT', url: 'https://chat.openai.com' }, { name: 'Gemini', url: 'https://gemini.google.com' }, { name: 'Claude', url: 'https://claude.ai' } ],
+            note: '', history: [],
+            searchProviders: [
+                { name: 'Google', url: 'https://www.google.com/search?q=', icon: 'https://www.google.com/s2/favicons?sz=32&domain_url=google.com' },
+                { name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=', icon: 'https://www.google.com/s2/favicons?sz=32&domain_url=duckduckgo.com' }
+            ],
+            activeSearchProviderIndex: 0, currentView: 'home',
+        };
+
+        if (savedState) {
+            const loadedState = JSON.parse(savedState);
+            // Ensure all keys from defaultState exist on the loaded state to prevent errors
+            return {...defaultState, ...loadedState};
+        }
+        return defaultState;
+    }
+
+    function getHostname(url) {
+        try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return url; }
+    }
+
+    function init() {
+        state = loadState();
+        if (state.tabs.length === 0) {
+            const initialTab = createNewTab();
+            setActiveTab(initialTab.id);
+        } else {
+            setActiveTab(state.activeTabId || state.tabs[0].id);
+        }
+        searchProviderIcon.src = state.searchProviders[state.activeSearchProviderIndex].icon;
+        render();
+    }
+
+    // --- Communication with Flutter ---
+    // This function will be called by Flutter when a page finishes loading
+    window.updatePageDetails = function(url, title) {
+        const activeTab = state.tabs.find(t => t.id === state.activeTabId);
+        if (activeTab && activeTab.url === url) {
+            activeTab.title = title || getHostname(url);
+            addToHistory(url, activeTab.title);
+            saveState();
+            render();
+        }
+    };
+
+    init();
+</script>
+</body>
+</html>
+
