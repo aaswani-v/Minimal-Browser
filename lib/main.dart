@@ -467,15 +467,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           offstage: index != _activeTabIndex,
                           child: InAppWebView(
                             key: tab.webViewKey,
-                            initialOptions: InAppWebViewGroupOptions(
-                              crossPlatform: tab.isYouTubeMusicTab
-                                  ? InAppWebViewOptions(
-                                userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+                            initialSettings: InAppWebViewSettings(
+                                userAgent: tab.isYouTubeMusicTab
+                                    ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+                                    : "",
                                 mediaPlaybackRequiresUserGesture: false,
-                              )
-                                  : InAppWebViewOptions(
-                                mediaPlaybackRequiresUserGesture: false,
-                              ),
                             ),
                             onWebViewCreated: (controller) {
                               _webViewControllers[tab.id] = controller;
