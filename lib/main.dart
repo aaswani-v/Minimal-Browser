@@ -1684,8 +1684,10 @@ class _TodosWidget extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Expanded(
+              const Expanded(
                 child: Text("To-Do List",
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: Colors.white,
@@ -1983,11 +1985,11 @@ class _QuickAIAddButton extends StatelessWidget {
                 ),
                 if (!compact) ...[
                   const SizedBox(height: 8),
-                  Text(
-                    "Add Tool",
-                    style: TextStyle(
-                        color: Colors.white.withOpacity(0.7), fontSize: 12),
-                  ),
+                  Text("Add Tool",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          color: Colors.white.withOpacity(0.7), fontSize: 12)),
                 ],
               ],
             ),
