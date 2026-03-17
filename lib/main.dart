@@ -74,6 +74,20 @@ class QuickAILink {
       QuickAILink(name: json['name'], url: json['url']);
 }
 
+class HistoryItem {
+  final String url;
+  final String title;
+  final DateTime timestamp;
+  HistoryItem(
+      {required this.url, required this.title, required this.timestamp});
+  Map<String, dynamic> toJson() =>
+      {'url': url, 'title': title, 'timestamp': timestamp.toIso8601String()};
+  static HistoryItem fromJson(Map<String, dynamic> json) => HistoryItem(
+      url: json['url'],
+      title: json['title'],
+      timestamp: DateTime.parse(json['timestamp']));
+}
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
@@ -110,7 +124,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   final Map<int, InAppWebViewController> _webViewControllers = {};
   List<BrowserTab> _tabs = [];
   int _activeTabIndex = 0;
-  double _progress = 0;
+  final ValueNotifier<double> _progress = ValueNotifier<double>(0.0);
 
   String _songTitle = "Not Playing";
   String _songArtist = "Open YouTube Music";
@@ -136,12 +150,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
     Favourite(title: "Reddit", url: "https://reddit.com"),
     Favourite(title: "Wikipedia", url: "https://wikipedia.org"),
   ];
-  // MODIFIED: This list will now be loaded from memory, with these as defaults.
   List<QuickAILink> _quickAILinks = [
     QuickAILink(name: "ChatGPT", url: "https://chat.openai.com"),
     QuickAILink(name: "Gemini", url: "https://gemini.google.com"),
     QuickAILink(name: "Claude", url: "https://claude.ai"),
   ];
+  List<HistoryItem> _history = [];
 
   @override
   void initState() {
@@ -173,6 +187,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     _homeScrollController.removeListener(_handleHomeScroll);
     _homeScrollController.dispose();
     _musicUpdateTimer?.cancel();
+    _progress.dispose();
     super.dispose();
   }
 
@@ -194,13 +209,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
       // Load minimalist mode preference
       _isMinimalistMode = prefs.getBool('minimalist_mode') ?? false;
 
-      // MODIFIED: Load custom AI links or use defaults if none are saved.
       final aiLinksString = prefs.getString('quick_ai_links');
       if (aiLinksString != null) {
         _quickAILinks = (jsonDecode(aiLinksString) as List)
-            .map((l) => QuickAILink.fromJson(l))
+            .map((l) => QuickAILink.fromJson(l as Map<String, dynamic>))
             .toList();
       }
+
+      final historyString = prefs.getString('history') ?? '[]';
+      _history = (jsonDecode(historyString) as List)
+          .map((h) => HistoryItem.fromJson(h as Map<String, dynamic>))
+          .toList();
     });
   }
 
@@ -210,9 +229,24 @@ class _BrowserScreenState extends State<BrowserScreen> {
         'notes', jsonEncode(_notes.map((n) => n.toJson()).toList()));
     await prefs.setString(
         'todos', jsonEncode(_todos.map((t) => t.toJson()).toList()));
-    // MODIFIED: Save custom AI links
     await prefs.setString('quick_ai_links',
         jsonEncode(_quickAILinks.map((l) => l.toJson()).toList()));
+    await prefs.setString(
+        'history', jsonEncode(_history.map((h) => h.toJson()).toList()));
+  }
+
+  void _recordHistory(String url, String title) {
+    if (url.isEmpty || url == "about:blank" || (url.startsWith("intent://")))
+      return;
+    setState(() {
+      if (_history.isEmpty || _history.first.url != url) {
+        _history.insert(
+            0, HistoryItem(url: url, title: title, timestamp: DateTime.now()));
+        if (_history.length > 50)
+          _history = _history.sublist(0, 50); // Keep last 50
+      }
+    });
+    _saveData();
   }
 
   void _addNote(String content) {
@@ -362,97 +396,139 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
+  void _showHistoryDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("History", style: TextStyle(color: Colors.white)),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: _history.isEmpty
+              ? const Center(
+                  child: Text("No history yet.",
+                      style: TextStyle(color: Colors.white54)))
+              : ListView.builder(
+                  itemCount: _history.length,
+                  itemBuilder: (context, index) {
+                    final item = _history[index];
+                    return ListTile(
+                      title: Text(item.title,
+                          style: const TextStyle(color: Colors.white),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                      subtitle: Text(item.url,
+                          style: const TextStyle(color: Colors.white54),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        _loadUrl(item.url);
+                      },
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            child:
+                const Text("Clear", style: TextStyle(color: Colors.redAccent)),
+            onPressed: () {
+              setState(() => _history.clear());
+              _saveData();
+              Navigator.of(context).pop();
+            },
+          ),
+          TextButton(
+            child: const Text("Close", style: TextStyle(color: Colors.white)),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _updateMusicInfo() async {
     BrowserTab? musicTab;
     try {
       musicTab = _tabs.firstWhere((t) => t.isYouTubeMusicTab);
     } catch (e) {
-      return; // No music tab exists
+      return;
     }
-
     final musicWebViewController = _webViewControllers[musicTab.id];
     if (musicWebViewController == null || !mounted) return;
 
-    // --- Method 1: MediaSession API (Primary) ---
     const getMediaInfoJs = """
       (function() {
-          if (!navigator.mediaSession || !navigator.mediaSession.metadata) { return null; }
-          const metadata = navigator.mediaSession.metadata;
-          const artwork = metadata.artwork;
-          const largestArtwork = (artwork && artwork.length > 0)
-              ? artwork.reduce((a, b) => (parseInt(a.sizes.split('x')[0]) > parseInt(b.sizes.split('x')[0])) ? a : b)
-              : null;
-          return JSON.stringify({
-              title: metadata.title,
-              artist: metadata.artist,
-              thumbnailUrl: largestArtwork ? largestArtwork.src : null
-          });
+          let title = '';
+          let artist = '';
+          let thumb = '';
+          
+          if (navigator.mediaSession && navigator.mediaSession.metadata) {
+              title = navigator.mediaSession.metadata.title;
+              artist = navigator.mediaSession.metadata.artist;
+              if (navigator.mediaSession.metadata.artwork && navigator.mediaSession.metadata.artwork.length > 0) {
+                 thumb = navigator.mediaSession.metadata.artwork[navigator.mediaSession.metadata.artwork.length - 1].src;
+              }
+          }
+          if (!title) {
+              title = document.querySelector('ytmusic-player-bar .title')?.innerText || 
+                      document.querySelector('.title.ytmusic-player-bar')?.innerText || '';
+          }
+          if (!artist) {
+              artist = document.querySelector('ytmusic-player-bar .byline')?.innerText?.split('•')[0]?.trim() || '';
+          }
+          if (!thumb) {
+              let img = document.querySelector('ytmusic-player-bar #song-image img') || document.querySelector('.thumbnail img');
+              if (img) thumb = img.src;
+          }
+          let isPlaying = false;
+          let video = document.querySelector('video');
+          if (video) {
+              isPlaying = !video.paused;
+          } else {
+              let playBtn = document.querySelector('#play-pause-button') || document.querySelector('.play-pause-button');
+              if (playBtn) {
+                  isPlaying = playBtn.getAttribute('aria-label') === 'Pause' || playBtn.title === 'Pause';
+              }
+          }
+          
+          return JSON.stringify({ title: title, artist: artist, thumb: thumb, isPlaying: isPlaying });
       })();
     """;
 
-    final mediaInfoJson =
+    final mediaInfoStr =
         await musicWebViewController.evaluateJavascript(source: getMediaInfoJs);
-    final playButtonAriaLabel = await musicWebViewController.evaluateJavascript(
-        source:
-            "document.getElementById('play-pause-button')?.getAttribute('aria-label')");
-
-    if (mediaInfoJson is String) {
-      final mediaInfo = jsonDecode(mediaInfoJson);
-      final title = mediaInfo['title'];
-      if (title != null && title.isNotEmpty) {
-        if (mounted) {
-          setState(() {
-            _songTitle = title;
-            _songArtist = mediaInfo['artist'] ?? "Artist Name";
-            _songThumbnailUrl = mediaInfo['thumbnailUrl'];
-            _isPlaying = playButtonAriaLabel == "Pause";
-          });
+    if (mediaInfoStr != null &&
+        mediaInfoStr is String &&
+        mediaInfoStr.isNotEmpty &&
+        mediaInfoStr != "null") {
+      try {
+        final mediaInfo = jsonDecode(mediaInfoStr);
+        final title = mediaInfo['title'];
+        if (title != null && title.isNotEmpty) {
+          if (mounted) {
+            setState(() {
+              _songTitle = title;
+              _songArtist = mediaInfo['artist'] ?? "Unknown Artist";
+              _songThumbnailUrl =
+                  mediaInfo['thumb'] != '' ? mediaInfo['thumb'] : null;
+              _isPlaying = mediaInfo['isPlaying'] ?? false;
+            });
+          }
+          return;
         }
-        return; // Success, exit here
-      }
+      } catch (e) {}
     }
 
-    // --- Method 2: Direct DOM Query (Fallback) ---
-    const getTitleJs =
-        "document.querySelector('ytmusic-player-bar .title.yt-formatted-string')?.innerText";
-    const getArtistJs =
-        "document.querySelector('ytmusic-player-bar .byline.yt-formatted-string')?.innerText.split('•')[0].trim()";
-    const getThumbnailJs =
-        "document.querySelector('ytmusic-player-bar #song-image img')?.src";
-
-    final titleResult =
-        await musicWebViewController.evaluateJavascript(source: getTitleJs);
-    final artistResult =
-        await musicWebViewController.evaluateJavascript(source: getArtistJs);
-    final thumbnailResult =
-        await musicWebViewController.evaluateJavascript(source: getThumbnailJs);
-
-    final String? title =
-        (titleResult is String && titleResult.isNotEmpty) ? titleResult : null;
-    final String? artist = (artistResult is String && artistResult.isNotEmpty)
-        ? artistResult
-        : null;
-    final String? thumbnailUrl =
-        (thumbnailResult is String && thumbnailResult.isNotEmpty)
-            ? thumbnailResult
-            : null;
-
     if (mounted) {
-      if (title != null) {
-        setState(() {
-          _songTitle = title;
-          _songArtist = artist ?? "Artist Name";
-          _songThumbnailUrl = thumbnailUrl;
-          _isPlaying = playButtonAriaLabel == "Pause";
-        });
-      } else {
-        setState(() {
-          _songTitle = "Not Playing";
-          _songArtist = "Open YouTube Music";
-          _songThumbnailUrl = null;
-          _isPlaying = false;
-        });
-      }
+      setState(() {
+        _songTitle = "Not Playing";
+        _songArtist = "Open YouTube Music";
+        _songThumbnailUrl = null;
+        _isPlaying = false;
+      });
     }
   }
 
@@ -471,223 +547,272 @@ class _BrowserScreenState extends State<BrowserScreen> {
           bottom: false,
           child: Stack(
             children: [
-              Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Color(0xFFB15656),
-                      Color(0xFF4B2424),
-                    ],
-                    stops: [0.17, 0.68],
+              if (!_showWebContent)
+                Positioned.fill(
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Color(0xFFB15656),
+                          Color(0xFF4B2424),
+                        ],
+                        stops: [0.17, 0.68],
+                      ),
+                    ),
                   ),
                 ),
-              ),
-              AnimatedPadding(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-                padding: EdgeInsets.only(
-                    bottom: _isNavBarVisible && _showWebContent
-                        ? _navBarHeight
-                        : 0),
-                child: Stack(
-                  children: [
-                    Stack(
-                      children: _tabs.asMap().entries.map((entry) {
-                        int index = entry.key;
-                        BrowserTab tab = entry.value;
-                        return Offstage(
-                          offstage:
-                              index != _activeTabIndex || !_showWebContent,
-                          child: InAppWebView(
-                            key: tab.webViewKey,
-                            initialSettings: InAppWebViewSettings(
-                              userAgent: tab.isYouTubeMusicTab
-                                  ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-                                  : "",
-                              mediaPlaybackRequiresUserGesture: false,
-                            ),
-                            onWebViewCreated: (controller) {
-                              _webViewControllers[tab.id] = controller;
-                              if (tab.url.startsWith("http")) {
-                                controller.loadUrl(
-                                    urlRequest:
-                                        URLRequest(url: WebUri(tab.url)));
-                              }
-                            },
-                            onLoadStop: (controller, url) async {
-                              if (url != null &&
-                                  url.toString().startsWith("http")) {
-                                List<Favicon> favicons =
-                                    await controller.getFavicons();
-                                String? title = await controller.getTitle();
-                                Color? dominantColor;
+              ..._tabs.asMap().entries.map((entry) {
+                int index = entry.key;
+                BrowserTab tab = entry.value;
+                return Positioned.fill(
+                  child: Offstage(
+                    offstage: index != _activeTabIndex || !_showWebContent,
+                    child: InAppWebView(
+                      key: tab.webViewKey,
+                      initialSettings: InAppWebViewSettings(
+                        transparentBackground: false,
+                        javaScriptEnabled: true,
+                        domStorageEnabled: true,
+                        useShouldOverrideUrlLoading: true,
+                        useHybridComposition: false,
+                        useOnRenderProcessGone: true,
+                        userAgent: tab.isYouTubeMusicTab
+                            ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+                            : null,
+                        mediaPlaybackRequiresUserGesture: false,
+                      ),
+                      shouldOverrideUrlLoading:
+                          (controller, navigationAction) async {
+                        final uri = navigationAction.request.url;
+                        if (uri == null) {
+                          return NavigationActionPolicy.ALLOW;
+                        }
 
-                                if (favicons.isNotEmpty) {
-                                  tab.favicon = favicons.first.url;
-                                  try {
-                                    final PaletteGenerator palette =
-                                        await PaletteGenerator
-                                            .fromImageProvider(
-                                      NetworkImage(tab.favicon.toString()),
-                                      size: const Size(32, 32),
-                                    );
-                                    dominantColor =
-                                        palette.dominantColor?.color;
-                                  } catch (e) {/* Could not generate palette */}
-                                }
+                        const allowedSchemes = <String>{
+                          'http',
+                          'https',
+                          'about',
+                          'data',
+                          'file',
+                          'javascript',
+                          'chrome',
+                        };
 
-                                if (mounted) {
-                                  setState(() {
-                                    if (index == _activeTabIndex)
-                                      _progress = 0.0;
-                                    tab.url = url.toString();
-                                    tab.title =
-                                        title ?? _getHostname(url.toString());
-                                    tab.dominantColor = dominantColor;
-                                    if (url.host
-                                        .contains("music.youtube.com")) {
-                                      tab.isYouTubeMusicTab = true;
-                                    }
-                                  });
-                                  if (tab.isYouTubeMusicTab) {
-                                    // A short delay helps ensure the player bar is loaded
-                                    Future.delayed(const Duration(seconds: 1),
-                                        _updateMusicInfo);
-                                  }
-                                }
+                        if (!allowedSchemes.contains(uri.scheme)) {
+                          return NavigationActionPolicy.CANCEL;
+                        }
+
+                        return NavigationActionPolicy.ALLOW;
+                      },
+                      onWebViewCreated: (controller) { 
+                        _webViewControllers[tab.id] = controller;
+                        if (tab.url.startsWith("http")) {
+                          controller.loadUrl(
+                              urlRequest: URLRequest(url: WebUri(tab.url)));
+                        }
+                      },
+                      onLoadStop: (controller, url) async {
+                        if (url != null && url.toString().startsWith("http")) {
+                          List<Favicon> favicons =
+                              await controller.getFavicons();
+                          String? title = await controller.getTitle();
+                          Color? dominantColor;
+
+                          if (favicons.isNotEmpty) {
+                            tab.favicon = favicons.first.url;
+                            try {
+                              final PaletteGenerator palette =
+                                  await PaletteGenerator.fromImageProvider(
+                                NetworkImage(tab.favicon.toString()),
+                                size: const Size(32, 32),
+                              );
+                              dominantColor = palette.dominantColor?.color;
+                            } catch (e) {/* Could not generate palette */}
+                          }
+
+                          if (mounted) {
+                            if (index == _activeTabIndex) _progress.value = 0.0;
+                            setState(() {
+                              tab.url = url.toString();
+                              tab.title = title ?? _getHostname(url.toString());
+                              tab.dominantColor = dominantColor;
+                              if (url.host.contains("music.youtube.com")) {
+                                tab.isYouTubeMusicTab = true;
                               }
-                            },
-                            onLoadStart: (controller, url) {
-                              if (mounted) {
-                                setState(() {
-                                  tab.title = "Loading...";
-                                  tab.favicon = null;
-                                  tab.dominantColor = null;
-                                  if (index == _activeTabIndex) _progress = 0.0;
-                                });
-                              }
-                            },
-                            onProgressChanged: (controller, progress) {
-                              if (mounted) {
-                                setState(() {
-                                  if (index == _activeTabIndex)
-                                    _progress = progress / 100.0;
-                                });
-                              }
-                            },
-                            onScrollChanged: (controller, x, y) {
-                              if (y > _lastWebViewScrollY && y > 50) {
-                                if (_isNavBarVisible)
-                                  setState(() => _isNavBarVisible = false);
-                              } else if (y < _lastWebViewScrollY) {
-                                if (!_isNavBarVisible)
-                                  setState(() => _isNavBarVisible = true);
-                              }
-                              _lastWebViewScrollY = y.toDouble();
-                            },
+                            });
+                            _recordHistory(tab.url, tab.title);
+                            if (tab.isYouTubeMusicTab) {
+                              // A short delay helps ensure the player bar is loaded
+                              Future.delayed(
+                                  const Duration(seconds: 1), _updateMusicInfo);
+                            }
+                          }
+                        }
+                      },
+                      onLoadStart: (controller, url) {
+                        if (mounted) {
+                          if (index == _activeTabIndex) _progress.value = 0.0;
+                          setState(() {
+                            tab.title = "Loading...";
+                            tab.favicon = null;
+                            tab.dominantColor = null;
+                          });
+                        }
+                      },
+                      onProgressChanged: (controller, progress) {
+                        if (mounted && index == _activeTabIndex) {
+                          _progress.value = progress / 100.0;
+                        }
+                      },
+                      onScrollChanged: (controller, x, y) {
+                        if (y > _lastWebViewScrollY && y > 50) {
+                          if (_isNavBarVisible)
+                            setState(() => _isNavBarVisible = false);
+                        } else if (y < _lastWebViewScrollY) {
+                          if (!_isNavBarVisible)
+                            setState(() => _isNavBarVisible = true);
+                        }
+                        _lastWebViewScrollY = y.toDouble();
+                      },
+                      onRenderProcessGone: (controller, detail) {
+                        if (!mounted) return;
+                        final tabIndex =
+                            _tabs.indexWhere((t) => t.id == tab.id);
+                        if (tabIndex == -1) return;
+
+                        final crashedTab = _tabs[tabIndex];
+                        final recoveredTab = BrowserTab(
+                          id: DateTime.now().millisecondsSinceEpoch,
+                          url: crashedTab.url.startsWith("http")
+                              ? crashedTab.url
+                              : "about:blank",
+                          title: crashedTab.title,
+                        )..isYouTubeMusicTab = crashedTab.isYouTubeMusicTab;
+
+                        setState(() {
+                          _webViewControllers.remove(crashedTab.id);
+                          _tabs[tabIndex] = recoveredTab;
+                        });
+
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                                "WebView crashed and was reloaded automatically."),
                           ),
                         );
-                      }).toList(),
+                      },
                     ),
-                    if (!_showWebContent)
-                      HomeScreenContent(
-                        scrollController: _homeScrollController,
-                        notes: _notes,
-                        onNoteChanged: (newContent) => _addNote(newContent),
-                        todos: _todos,
-                        favourites: _favourites,
-                        quickAILinks: _quickAILinks,
-                        onAddTodoTap: _showAddTodoDialog,
-                        onToggleTodo: _toggleTodo,
-                        onLoadUrl: _loadUrl,
-                        onAddAILink: _showAddAIDialog,
-                        isMinimalistMode: _isMinimalistMode,
-                        onToggleMinimalistMode: () async {
-                          setState(
-                              () => _isMinimalistMode = !_isMinimalistMode);
-                          final prefs = await SharedPreferences.getInstance();
-                          await prefs.setBool(
-                              'minimalist_mode', _isMinimalistMode);
-                        },
-                        onOpenMusic: () {
-                          _addTab(
-                              url: "https://music.youtube.com",
-                              title: "YouTube Music",
-                              isMusicTab: true);
-                        },
-                        songTitle: _songTitle,
-                        songArtist: _songArtist,
-                        songThumbnailUrl: _songThumbnailUrl,
-                        isPlaying: _isPlaying,
-                        onMusicPrevious: () {
-                          final musicTab = _tabs.firstWhere(
-                              (t) => t.isYouTubeMusicTab,
-                              orElse: () => _activeTab);
-                          _webViewControllers[musicTab.id]?.evaluateJavascript(
-                              source:
-                                  "document.querySelector('.previous-button').click()");
-                          Future.delayed(const Duration(milliseconds: 500),
-                              _updateMusicInfo);
-                        },
-                        onMusicPlayPause: () {
-                          final musicTab = _tabs.firstWhere(
-                              (t) => t.isYouTubeMusicTab,
-                              orElse: () => _activeTab);
-                          _webViewControllers[musicTab.id]?.evaluateJavascript(
-                              source:
-                                  "document.getElementById('play-pause-button').click()");
-                          Future.delayed(const Duration(milliseconds: 500),
-                              _updateMusicInfo);
-                        },
-                        onMusicNext: () {
-                          final musicTab = _tabs.firstWhere(
-                              (t) => t.isYouTubeMusicTab,
-                              orElse: () => _activeTab);
-                          _webViewControllers[musicTab.id]?.evaluateJavascript(
-                              source:
-                                  "document.querySelector('.next-button').click()");
-                          Future.delayed(const Duration(milliseconds: 500),
-                              _updateMusicInfo);
-                        },
-                      ),
-                  ],
+                  ),
+                );
+              }).toList(),
+              if (!_showWebContent)
+                HomeScreenContent(
+                  scrollController: _homeScrollController,
+                  notes: _notes,
+                  onNoteChanged: (newContent) => _addNote(newContent),
+                  todos: _todos,
+                  favourites: _favourites,
+                  quickAILinks: _quickAILinks,
+                  onAddTodoTap: _showAddTodoDialog,
+                  onToggleTodo: _toggleTodo,
+                  onLoadUrl: _loadUrl,
+                  onAddAILink: _showAddAIDialog,
+                  isMinimalistMode: _isMinimalistMode,
+                  onShowHistory: _showHistoryDialog,
+                  onToggleMinimalistMode: () async {
+                    setState(() => _isMinimalistMode = !_isMinimalistMode);
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setBool('minimalist_mode', _isMinimalistMode);
+                  },
+                  onOpenMusic: () {
+                    _addTab(
+                        url: "https://music.youtube.com",
+                        title: "YouTube Music",
+                        isMusicTab: true);
+                  },
+                  songTitle: _songTitle,
+                  songArtist: _songArtist,
+                  songThumbnailUrl: _songThumbnailUrl,
+                  isPlaying: _isPlaying,
+                  onMusicPrevious: () {
+                    try {
+                      final musicTab =
+                          _tabs.firstWhere((t) => t.isYouTubeMusicTab);
+                      _webViewControllers[musicTab.id]?.evaluateJavascript(
+                          source:
+                              "let pb = document.querySelector('.previous-button'); if(pb) pb.click(); else { document.querySelector('video').currentTime = 0; }");
+                      Future.delayed(
+                          const Duration(milliseconds: 500), _updateMusicInfo);
+                    } catch (_) {}
+                  },
+                  onMusicPlayPause: () {
+                    try {
+                      final musicTab =
+                          _tabs.firstWhere((t) => t.isYouTubeMusicTab);
+                      _webViewControllers[musicTab.id]?.evaluateJavascript(
+                          source:
+                              "let v = document.querySelector('video'); if(v){ v.paused ? v.play() : v.pause(); } else { document.querySelector('#play-pause-button')?.click() || document.querySelector('.play-pause-button')?.click(); }");
+                      Future.delayed(
+                          const Duration(milliseconds: 500), _updateMusicInfo);
+                    } catch (_) {}
+                  },
+                  onMusicNext: () {
+                    try {
+                      final musicTab =
+                          _tabs.firstWhere((t) => t.isYouTubeMusicTab);
+                      _webViewControllers[musicTab.id]?.evaluateJavascript(
+                          source:
+                              "let nb = document.querySelector('.next-button'); if(nb) { nb.click(); } else { document.querySelector('.ytp-next-button')?.click(); }");
+                      Future.delayed(
+                          const Duration(milliseconds: 500), _updateMusicInfo);
+                    } catch (_) {}
+                  },
                 ),
+              ValueListenableBuilder(
+                valueListenable: _progress,
+                builder: (context, progress, child) {
+                  if (progress > 0 && progress < 1) {
+                    return Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(
+                        value: progress,
+                        backgroundColor: Colors.transparent,
+                        valueColor:
+                            const AlwaysStoppedAnimation<Color>(Colors.white),
+                        minHeight: 2,
+                      ),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
               ),
-              if (_progress > 0 && _progress < 1)
-                Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: LinearProgressIndicator(
-                      value: _progress,
-                      backgroundColor: Colors.transparent,
-                      valueColor:
-                          const AlwaysStoppedAnimation<Color>(Colors.white),
-                      minHeight: 2,
-                    )),
               Positioned(
                 bottom: 0,
                 left: 0,
                 right: 0,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeInOut,
-                  transform: Matrix4.translationValues(
-                      0, _isNavBarVisible ? 0 : 200, 0),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    child: FloatingNavBar(
-                      key: _navBarKey,
-                      tabs: _tabs,
-                      activeTabIndex: _activeTabIndex,
-                      adaptiveColor: _activeTab.dominantColor,
-                      onTabSelected: _setActiveTab,
-                      onCloseTab: _closeTab,
-                      onNewTab: () => _addTab(),
-                      onSearchTap: () =>
-                          setState(() => _isSearchVisible = true),
+                child: SafeArea(
+                  top: false,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                    transform: Matrix4.translationValues(
+                        0, _isNavBarVisible ? 0 : 200, 0),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      child: FloatingNavBar(
+                        key: _navBarKey,
+                        tabs: _tabs,
+                        activeTabIndex: _activeTabIndex,
+                        onTabSelected: _setActiveTab,
+                        onCloseTab: _closeTab,
+                        onNewTab: () => _addTab(),
+                        onSearchTap: () =>
+                            setState(() => _isSearchVisible = true),
+                      ),
                     ),
                   ),
                 ),
@@ -931,12 +1056,14 @@ class GlassWidget extends StatelessWidget {
   final Widget child;
   final BorderRadius borderRadius;
   final Color? adaptiveColor;
+  final double fallbackOpacity;
 
   const GlassWidget(
       {super.key,
       required this.child,
       this.borderRadius = const BorderRadius.all(Radius.circular(8.0)),
-      this.adaptiveColor});
+      this.adaptiveColor,
+      this.fallbackOpacity = 0.10});
 
   @override
   Widget build(BuildContext context) {
@@ -957,9 +1084,8 @@ class GlassWidget extends StatelessWidget {
               width: 1.0,
             ),
           )
-        // Figma specs: fill #706C6C @ 10%, stroke #FFFFFF @ 18%, blur 30
         : BoxDecoration(
-            color: const Color(0xFF706C6C).withOpacity(0.10),
+            color: const Color(0xFF706C6C).withOpacity(fallbackOpacity),
             borderRadius: borderRadius,
             border: Border.all(
               color: Colors.white.withOpacity(0.18),
@@ -1156,6 +1282,7 @@ class HomeScreenContent extends StatelessWidget {
   final ValueChanged<String> onLoadUrl;
   final VoidCallback onOpenMusic;
   final VoidCallback onAddAILink;
+  final VoidCallback onShowHistory;
   final bool isMinimalistMode;
   final VoidCallback onToggleMinimalistMode;
   final String songTitle;
@@ -1179,6 +1306,7 @@ class HomeScreenContent extends StatelessWidget {
       required this.onLoadUrl,
       required this.onOpenMusic,
       required this.onAddAILink,
+      required this.onShowHistory,
       required this.isMinimalistMode,
       required this.onToggleMinimalistMode,
       required this.songTitle,
@@ -1202,42 +1330,69 @@ class HomeScreenContent extends StatelessWidget {
             // Minimalist mode toggle button
             Align(
               alignment: Alignment.topRight,
-              child: GestureDetector(
-                onTap: onToggleMinimalistMode,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF706C6C).withOpacity(0.10),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.18),
-                      width: 1.0,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  GestureDetector(
+                    onTap: onShowHistory,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                          color: const Color(0xFF706C6C).withOpacity(0.10),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: Colors.white.withOpacity(0.18),
+                              width: 1.0)),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.history,
+                              color: Colors.white.withOpacity(0.7), size: 16),
+                          const SizedBox(width: 6),
+                          Text("History",
+                              style: TextStyle(
+                                  color: Colors.white.withOpacity(0.7),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500)),
+                        ],
+                      ),
                     ),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        isMinimalistMode
-                            ? Icons.widgets_outlined
-                            : Icons.visibility_off_outlined,
-                        color: Colors.white.withOpacity(0.7),
-                        size: 16,
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: onToggleMinimalistMode,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                          color: const Color(0xFF706C6C).withOpacity(0.10),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: Colors.white.withOpacity(0.18),
+                              width: 1.0)),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                              isMinimalistMode
+                                  ? Icons.widgets_outlined
+                                  : Icons.visibility_off_outlined,
+                              color: Colors.white.withOpacity(0.7),
+                              size: 16),
+                          const SizedBox(width: 6),
+                          Text(isMinimalistMode ? "Show" : "Hide",
+                              style: TextStyle(
+                                  color: Colors.white.withOpacity(0.7),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500)),
+                        ],
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isMinimalistMode ? "Show" : "Hide",
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.7),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
             ),
             const SizedBox(height: 16),
@@ -1311,7 +1466,7 @@ class HomeScreenContent extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   SizedBox(
-                    height: 250,
+                    height: 290,
                     child: GlassWidget(
                       borderRadius: BorderRadius.circular(8.0),
                       child: _NotesWidget(
@@ -1341,7 +1496,7 @@ class HomeScreenContent extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   SizedBox(
-                    height: 250,
+                    height: 290,
                     child: GlassWidget(
                       borderRadius: BorderRadius.circular(8.0),
                       child: _QuickAIAccessWidget(
@@ -1483,11 +1638,13 @@ class _TodosWidget extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              const Text("To-Do List",
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      fontSize: 16)),
+              Expanded(
+                child: Text("To-Do List",
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        fontSize: 16)),
+              ),
               IconButton(
                 icon: const Icon(Icons.add, color: Colors.white70),
                 onPressed: onAddTodoTap,
