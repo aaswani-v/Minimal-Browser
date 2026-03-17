@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -295,7 +296,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   BrowserTab get _activeTab => _tabs[_activeTabIndex];
-  bool get _showWebContent => _activeTab.url.startsWith("http");
+  bool get _showWebContent =>
+      _activeTab.url.startsWith("http") ||
+      _webViewControllers.containsKey(_activeTab.id);
   InAppWebViewController? get _activeWebViewController =>
       _webViewControllers[_activeTab.id];
 
@@ -370,6 +373,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
     } catch (_) {
       return "Loading...";
     }
+  }
+
+  void _showWebViewError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   Future<bool> _onWillPop() async {
@@ -563,150 +573,163 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     ),
                   ),
                 ),
-              ..._tabs.asMap().entries.map((entry) {
-                int index = entry.key;
-                BrowserTab tab = entry.value;
-                return Positioned.fill(
-                  child: Offstage(
-                    offstage: index != _activeTabIndex || !_showWebContent,
-                    child: InAppWebView(
-                      key: tab.webViewKey,
-                      initialSettings: InAppWebViewSettings(
-                        transparentBackground: false,
-                        javaScriptEnabled: true,
-                        domStorageEnabled: true,
-                        useShouldOverrideUrlLoading: true,
-                        useHybridComposition: false,
-                        useOnRenderProcessGone: true,
-                        userAgent: tab.isYouTubeMusicTab
-                            ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-                            : null,
-                        mediaPlaybackRequiresUserGesture: false,
-                      ),
-                      shouldOverrideUrlLoading:
-                          (controller, navigationAction) async {
-                        final uri = navigationAction.request.url;
-                        if (uri == null) {
-                          return NavigationActionPolicy.ALLOW;
-                        }
+              if (_showWebContent)
+                Positioned.fill(
+                  child: Builder(
+                    builder: (context) {
+                      final tab = _activeTab;
+                      final tabId = tab.id;
+                      return RepaintBoundary(
+                        child: InAppWebView(
+                          key: ValueKey(tabId),
+                          initialSettings: InAppWebViewSettings(
+                            transparentBackground: false,
+                            javaScriptEnabled: true,
+                            domStorageEnabled: true,
+                            useShouldOverrideUrlLoading: true,
+                            useHybridComposition: true,
+                            useOnRenderProcessGone: true,
+                            userAgent: tab.isYouTubeMusicTab
+                                ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+                                : null,
+                            mediaPlaybackRequiresUserGesture: false,
+                          ),
+                          shouldOverrideUrlLoading:
+                              (controller, navigationAction) async {
+                            final uri = navigationAction.request.url;
+                            if (uri == null) {
+                              return NavigationActionPolicy.ALLOW;
+                            }
+                            return NavigationActionPolicy.ALLOW;
+                          },
+                          onWebViewCreated: (controller) {
+                            _webViewControllers[tabId] = controller;
+                            if (tab.url.startsWith("http")) {
+                              controller.loadUrl(
+                                  urlRequest: URLRequest(url: WebUri(tab.url)));
+                            }
+                          },
+                          onLoadStop: (controller, url) async {
+                            if (url == null ||
+                                !url.toString().startsWith("http") ||
+                                !mounted) {
+                              return;
+                            }
 
-                        const allowedSchemes = <String>{
-                          'http',
-                          'https',
-                          'about',
-                          'data',
-                          'file',
-                          'javascript',
-                          'chrome',
-                        };
+                            final tabIndex =
+                                _tabs.indexWhere((t) => t.id == tabId);
+                            if (tabIndex == -1) return;
 
-                        if (!allowedSchemes.contains(uri.scheme)) {
-                          return NavigationActionPolicy.CANCEL;
-                        }
+                            List<Favicon> favicons =
+                                await controller.getFavicons();
+                            String? title = await controller.getTitle();
+                            Color? dominantColor;
 
-                        return NavigationActionPolicy.ALLOW;
-                      },
-                      onWebViewCreated: (controller) { 
-                        _webViewControllers[tab.id] = controller;
-                        if (tab.url.startsWith("http")) {
-                          controller.loadUrl(
-                              urlRequest: URLRequest(url: WebUri(tab.url)));
-                        }
-                      },
-                      onLoadStop: (controller, url) async {
-                        if (url != null && url.toString().startsWith("http")) {
-                          List<Favicon> favicons =
-                              await controller.getFavicons();
-                          String? title = await controller.getTitle();
-                          Color? dominantColor;
+                            if (favicons.isNotEmpty) {
+                              _tabs[tabIndex].favicon = favicons.first.url;
+                              try {
+                                final PaletteGenerator palette =
+                                    await PaletteGenerator.fromImageProvider(
+                                  NetworkImage(
+                                      _tabs[tabIndex].favicon.toString()),
+                                  size: const Size(32, 32),
+                                );
+                                dominantColor = palette.dominantColor?.color;
+                              } catch (e) {/* Could not generate palette */}
+                            }
 
-                          if (favicons.isNotEmpty) {
-                            tab.favicon = favicons.first.url;
-                            try {
-                              final PaletteGenerator palette =
-                                  await PaletteGenerator.fromImageProvider(
-                                NetworkImage(tab.favicon.toString()),
-                                size: const Size(32, 32),
-                              );
-                              dominantColor = palette.dominantColor?.color;
-                            } catch (e) {/* Could not generate palette */}
-                          }
-
-                          if (mounted) {
-                            if (index == _activeTabIndex) _progress.value = 0.0;
+                            _progress.value = 0.0;
                             setState(() {
-                              tab.url = url.toString();
-                              tab.title = title ?? _getHostname(url.toString());
-                              tab.dominantColor = dominantColor;
+                              _tabs[tabIndex].url = url.toString();
+                              _tabs[tabIndex].title =
+                                  title ?? _getHostname(url.toString());
+                              _tabs[tabIndex].dominantColor = dominantColor;
                               if (url.host.contains("music.youtube.com")) {
-                                tab.isYouTubeMusicTab = true;
+                                _tabs[tabIndex].isYouTubeMusicTab = true;
                               }
                             });
-                            _recordHistory(tab.url, tab.title);
-                            if (tab.isYouTubeMusicTab) {
-                              // A short delay helps ensure the player bar is loaded
+
+                            _recordHistory(
+                                _tabs[tabIndex].url, _tabs[tabIndex].title);
+                            if (_tabs[tabIndex].isYouTubeMusicTab) {
                               Future.delayed(
                                   const Duration(seconds: 1), _updateMusicInfo);
                             }
-                          }
-                        }
-                      },
-                      onLoadStart: (controller, url) {
-                        if (mounted) {
-                          if (index == _activeTabIndex) _progress.value = 0.0;
-                          setState(() {
-                            tab.title = "Loading...";
-                            tab.favicon = null;
-                            tab.dominantColor = null;
-                          });
-                        }
-                      },
-                      onProgressChanged: (controller, progress) {
-                        if (mounted && index == _activeTabIndex) {
-                          _progress.value = progress / 100.0;
-                        }
-                      },
-                      onScrollChanged: (controller, x, y) {
-                        if (y > _lastWebViewScrollY && y > 50) {
-                          if (_isNavBarVisible)
-                            setState(() => _isNavBarVisible = false);
-                        } else if (y < _lastWebViewScrollY) {
-                          if (!_isNavBarVisible)
-                            setState(() => _isNavBarVisible = true);
-                        }
-                        _lastWebViewScrollY = y.toDouble();
-                      },
-                      onRenderProcessGone: (controller, detail) {
-                        if (!mounted) return;
-                        final tabIndex =
-                            _tabs.indexWhere((t) => t.id == tab.id);
-                        if (tabIndex == -1) return;
+                          },
+                          onLoadStart: (controller, url) {
+                            if (!mounted) return;
+                            final tabIndex =
+                                _tabs.indexWhere((t) => t.id == tabId);
+                            if (tabIndex == -1) return;
 
-                        final crashedTab = _tabs[tabIndex];
-                        final recoveredTab = BrowserTab(
-                          id: DateTime.now().millisecondsSinceEpoch,
-                          url: crashedTab.url.startsWith("http")
-                              ? crashedTab.url
-                              : "about:blank",
-                          title: crashedTab.title,
-                        )..isYouTubeMusicTab = crashedTab.isYouTubeMusicTab;
+                            _progress.value = 0.0;
+                            setState(() {
+                              if (url != null) {
+                                _tabs[tabIndex].url = url.toString();
+                              }
+                              _tabs[tabIndex].title = "Loading...";
+                              _tabs[tabIndex].favicon = null;
+                              _tabs[tabIndex].dominantColor = null;
+                            });
+                          },
+                          onProgressChanged: (controller, progress) {
+                            if (mounted) {
+                              _progress.value = progress / 100.0;
+                            }
+                          },
+                          onReceivedError: (controller, request, error) {
+                            if (request.isForMainFrame ?? false) {
+                              _showWebViewError(
+                                  "Failed to load ${tab.title}: ${error.description}");
+                            }
+                          },
+                          onReceivedHttpError:
+                              (controller, request, errorResponse) {
+                            if (request.isForMainFrame ?? false) {
+                              _showWebViewError(
+                                  "${tab.title} returned HTTP ${errorResponse.statusCode}.");
+                            }
+                          },
+                          onScrollChanged: (controller, x, y) {
+                            if (y > _lastWebViewScrollY && y > 50) {
+                              if (_isNavBarVisible) {
+                                setState(() => _isNavBarVisible = false);
+                              }
+                            } else if (y < _lastWebViewScrollY) {
+                              if (!_isNavBarVisible) {
+                                setState(() => _isNavBarVisible = true);
+                              }
+                            }
+                            _lastWebViewScrollY = y.toDouble();
+                          },
+                          onRenderProcessGone: (controller, detail) {
+                            if (!mounted) return;
+                            final tabIndex =
+                                _tabs.indexWhere((t) => t.id == tabId);
+                            if (tabIndex == -1) return;
 
-                        setState(() {
-                          _webViewControllers.remove(crashedTab.id);
-                          _tabs[tabIndex] = recoveredTab;
-                        });
+                            final crashedTab = _tabs[tabIndex];
+                            final recoveredTab = BrowserTab(
+                              id: DateTime.now().millisecondsSinceEpoch,
+                              url: crashedTab.url.startsWith("http")
+                                  ? crashedTab.url
+                                  : "about:blank",
+                              title: crashedTab.title,
+                            )..isYouTubeMusicTab = crashedTab.isYouTubeMusicTab;
 
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                                "WebView crashed and was reloaded automatically."),
-                          ),
-                        );
-                      },
-                    ),
+                            setState(() {
+                              _webViewControllers.remove(crashedTab.id);
+                              _tabs[tabIndex] = recoveredTab;
+                            });
+
+                            _showWebViewError(
+                                "WebView crashed and was reloaded automatically.");
+                          },
+                        ),
+                      );
+                    },
                   ),
-                );
-              }).toList(),
+                ),
               if (!_showWebContent)
                 HomeScreenContent(
                   scrollController: _homeScrollController,
@@ -794,24 +817,27 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 bottom: 0,
                 left: 0,
                 right: 0,
-                child: SafeArea(
-                  top: false,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    curve: Curves.easeInOut,
-                    transform: Matrix4.translationValues(
-                        0, _isNavBarVisible ? 0 : 200, 0),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      child: FloatingNavBar(
-                        key: _navBarKey,
-                        tabs: _tabs,
-                        activeTabIndex: _activeTabIndex,
-                        onTabSelected: _setActiveTab,
-                        onCloseTab: _closeTab,
-                        onNewTab: () => _addTab(),
-                        onSearchTap: () =>
-                            setState(() => _isSearchVisible = true),
+                child: RepaintBoundary(
+                  child: SafeArea(
+                    top: false,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                      transform: Matrix4.translationValues(
+                          0, _isNavBarVisible ? 0 : 200, 0),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: FloatingNavBar(
+                          key: _navBarKey,
+                          tabs: _tabs,
+                          activeTabIndex: _activeTabIndex,
+                          enableBlur: !_showWebContent,
+                          onTabSelected: _setActiveTab,
+                          onCloseTab: _closeTab,
+                          onNewTab: () => _addTab(),
+                          onSearchTap: () =>
+                              setState(() => _isSearchVisible = true),
+                        ),
                       ),
                     ),
                   ),
@@ -1057,13 +1083,15 @@ class GlassWidget extends StatelessWidget {
   final BorderRadius borderRadius;
   final Color? adaptiveColor;
   final double fallbackOpacity;
+  final bool enableBlur;
 
   const GlassWidget(
       {super.key,
       required this.child,
       this.borderRadius = const BorderRadius.all(Radius.circular(8.0)),
       this.adaptiveColor,
-      this.fallbackOpacity = 0.10});
+      this.fallbackOpacity = 0.10,
+      this.enableBlur = true});
 
   @override
   Widget build(BuildContext context) {
@@ -1093,13 +1121,26 @@ class GlassWidget extends StatelessWidget {
             ),
           );
 
+    final content = Container(
+      decoration: decoration,
+      child: child,
+    );
+
+    final shouldBlur = enableBlur && !Platform.isAndroid;
+
+    if (!shouldBlur) {
+      return ClipRRect(
+        borderRadius: borderRadius,
+        child: content,
+      );
+    }
+
     return ClipRRect(
       borderRadius: borderRadius,
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 30.0, sigmaY: 30.0),
-        child: Container(
-          decoration: decoration,
-          child: child,
+      child: ClipRect(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30.0, sigmaY: 30.0),
+          child: content,
         ),
       ),
     );
@@ -1110,6 +1151,7 @@ class FloatingNavBar extends StatelessWidget {
   final List<BrowserTab> tabs;
   final int activeTabIndex;
   final Color? adaptiveColor;
+  final bool enableBlur;
   final ValueChanged<int> onTabSelected;
   final ValueChanged<int> onCloseTab;
   final VoidCallback onNewTab;
@@ -1120,6 +1162,7 @@ class FloatingNavBar extends StatelessWidget {
     required this.tabs,
     required this.activeTabIndex,
     this.adaptiveColor,
+    this.enableBlur = true,
     required this.onTabSelected,
     required this.onCloseTab,
     required this.onNewTab,
@@ -1171,6 +1214,7 @@ class FloatingNavBar extends StatelessWidget {
                 child: GlassWidget(
                   borderRadius: BorderRadius.circular(8.0),
                   adaptiveColor: adaptiveColor,
+                  enableBlur: enableBlur,
                   child: Container(
                     width: 48,
                     alignment: Alignment.center,
@@ -1187,6 +1231,7 @@ class FloatingNavBar extends StatelessWidget {
           child: GlassWidget(
             borderRadius: BorderRadius.circular(12.0),
             adaptiveColor: adaptiveColor,
+            enableBlur: enableBlur,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
@@ -1227,6 +1272,7 @@ class FloatingNavBar extends StatelessWidget {
       child: GlassWidget(
         borderRadius: BorderRadius.circular(8.0),
         adaptiveColor: adaptiveColor,
+        enableBlur: enableBlur,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12.0),
           decoration: BoxDecoration(
@@ -1824,37 +1870,44 @@ class _QuickAIAccessWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("Quick AI Access",
-              style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  fontSize: 16)),
-          const SizedBox(height: 16),
-          Expanded(
-            child: GridView.builder(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Quick AI Access",
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          fontSize: 16)),
+                  const SizedBox(height: 16),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                    ),
+                    itemCount: quickAILinks.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == quickAILinks.length) {
+                        return _QuickAIAddButton(onTap: onAddAILink);
+                      }
+                      final link = quickAILinks[index];
+                      return _QuickAIButton(
+                          link: link, onTap: () => onLoadUrl(link.url));
+                    },
+                  ),
+                ],
               ),
-              // MODIFIED: Added 1 to item count for the "add" button
-              itemCount: quickAILinks.length + 1,
-              itemBuilder: (context, index) {
-                // If it's the last item, show the "add" button
-                if (index == quickAILinks.length) {
-                  return _QuickAIAddButton(onTap: onAddAILink);
-                }
-                // Otherwise, show the AI link button
-                final link = quickAILinks[index];
-                return _QuickAIButton(
-                    link: link, onTap: () => onLoadUrl(link.url));
-              },
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -1910,22 +1963,36 @@ class _QuickAIAddButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.2),
-            borderRadius: BorderRadius.circular(12.0),
-            border: Border.all(color: Colors.white.withOpacity(0.2))),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.add, color: Colors.white.withOpacity(0.7)),
-            const SizedBox(height: 8),
-            Text("Add Tool",
-                style: TextStyle(
-                    color: Colors.white.withOpacity(0.7), fontSize: 12)),
-          ],
-        ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact =
+              constraints.maxHeight < 64 || constraints.maxWidth < 64;
+          return Container(
+            padding: EdgeInsets.all(compact ? 4 : 8),
+            decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(12.0),
+                border: Border.all(color: Colors.white.withOpacity(0.2))),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.add,
+                  color: Colors.white.withOpacity(0.7),
+                  size: compact ? 16 : 24,
+                ),
+                if (!compact) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    "Add Tool",
+                    style: TextStyle(
+                        color: Colors.white.withOpacity(0.7), fontSize: 12),
+                  ),
+                ],
+              ],
+            ),
+          );
+        },
       ),
     );
   }
