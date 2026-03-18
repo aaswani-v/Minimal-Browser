@@ -1,12 +1,47 @@
 import 'dart:ui';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+
+const String _desktopChromeUserAgent =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+const Set<String> _backgroundAudioAllowedHosts = {
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'music.youtube.com',
+  'open.spotify.com',
+  'music.apple.com',
+};
+
+@pragma('vm:entry-point')
+void _startForegroundAudioService() {
+  FlutterForegroundTask.setTaskHandler(_BackgroundAudioTaskHandler());
+}
+
+class _BackgroundAudioTaskHandler extends TaskHandler {
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
+
+  @override
+  void onRepeatEvent(DateTime timestamp) {}
+
+  @override
+  Future<void> onDestroy(DateTime timestamp) async {}
+
+  @override
+  void onNotificationPressed() {
+    FlutterForegroundTask.launchApp('/');
+  }
+}
 
 // --- Data Models ---
 
@@ -142,7 +177,8 @@ class BrowserScreen extends StatefulWidget {
   State<BrowserScreen> createState() => _BrowserScreenState();
 }
 
-class _BrowserScreenState extends State<BrowserScreen> {
+class _BrowserScreenState extends State<BrowserScreen>
+    with WidgetsBindingObserver {
   // --- Minimalist Mode ---
   bool _isMinimalistMode = false;
   // --- History ---
@@ -166,6 +202,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
   final GlobalKey _navBarKey = GlobalKey();
   double _navBarHeight = 0;
 
+  bool _foregroundTaskInitialized = false;
+
   // --- Search Screen State ---
   bool _isSearchVisible = false;
 
@@ -187,6 +225,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    FlutterForegroundTask.initCommunicationPort();
+    _initForegroundTask();
+    _requestForegroundNotificationPermission();
     _addTab(isFirstTab: true);
     _loadData();
     _homeScrollController.addListener(_handleHomeScroll);
@@ -211,10 +253,139 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _stopForegroundServiceIfRunning();
     _homeScrollController.removeListener(_handleHomeScroll);
     _homeScrollController.dispose();
     _musicUpdateTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    if (state == AppLifecycleState.paused) {
+      _handleAppPaused();
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      _handleAppResumed();
+    }
+  }
+
+  Future<void> _requestForegroundNotificationPermission() async {
+    if (!Platform.isAndroid) return;
+
+    final permission =
+        await FlutterForegroundTask.checkNotificationPermission();
+    if (permission != NotificationPermission.granted) {
+      await FlutterForegroundTask.requestNotificationPermission();
+    }
+  }
+
+  void _initForegroundTask() {
+    if (!Platform.isAndroid || _foregroundTaskInitialized) return;
+
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'background_audio',
+        channelName: 'Background Audio Playback',
+        channelDescription:
+            'Keeps audio playing while Minimal Browser is in the background.',
+        channelImportance: NotificationChannelImportance.LOW,
+        priority: NotificationPriority.LOW,
+        onlyAlertOnce: true,
+      ),
+      iosNotificationOptions: IOSNotificationOptions(
+        showNotification: false,
+        playSound: false,
+      ),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction: ForegroundTaskEventAction.nothing(),
+        autoRunOnBoot: false,
+        autoRunOnMyPackageReplaced: false,
+        allowWakeLock: false,
+        allowWifiLock: false,
+      ),
+    );
+
+    _foregroundTaskInitialized = true;
+  }
+
+  bool _isAllowedBackgroundAudioUrl(String? url) {
+    if (url == null || !url.startsWith('http')) return false;
+    try {
+      final host = Uri.parse(url).host.toLowerCase();
+      return _backgroundAudioAllowedHosts.contains(host);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _activeTabAllowsBackgroundAudio() {
+    return _isAllowedBackgroundAudioUrl(_activeTab.url);
+  }
+
+  Future<void> _handleAppPaused() async {
+    final controller = _activeWebViewController;
+    if (controller == null) return;
+
+    if (_activeTabAllowsBackgroundAudio()) {
+      await _startForegroundServiceIfNeeded();
+    } else {
+      await _stopForegroundServiceIfRunning();
+      await controller.pauseTimers();
+    }
+  }
+
+  Future<void> _handleAppResumed() async {
+    await _stopForegroundServiceIfRunning();
+    final controller = _activeWebViewController;
+    if (controller != null) {
+      await controller.resumeTimers();
+    }
+  }
+
+  Future<void> _startForegroundServiceIfNeeded() async {
+    if (!Platform.isAndroid || !_foregroundTaskInitialized) return;
+
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.updateService(
+        notificationTitle: 'Playing in background',
+        notificationText: 'Tap to return',
+      );
+      return;
+    }
+
+    await FlutterForegroundTask.startService(
+      serviceId: 7788,
+      notificationTitle: 'Playing in background',
+      notificationText: 'Tap to return',
+      notificationInitialRoute: '/',
+      callback: _startForegroundAudioService,
+    );
+  }
+
+  Future<void> _stopForegroundServiceIfRunning() async {
+    if (!Platform.isAndroid || !_foregroundTaskInitialized) return;
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.stopService();
+    }
+  }
+
+  Future<void> _syncForegroundServiceForCurrentUrl() async {
+    if (!Platform.isAndroid) return;
+
+    final appInBackground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused;
+
+    if (appInBackground && _activeTabAllowsBackgroundAudio()) {
+      await _startForegroundServiceIfNeeded();
+    } else {
+      await _stopForegroundServiceIfRunning();
+    }
   }
 
   // --- Data Persistence ---
@@ -329,9 +500,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
         // Remove duplicate if exists (most recent visit takes precedence)
         _history.removeWhere((h) => h.url == url);
         _history.insert(
-            0,
-            HistoryItem(
-                title: title, url: url, visitedAt: DateTime.now()));
+            0, HistoryItem(title: title, url: url, visitedAt: DateTime.now()));
         // Keep history to a reasonable limit
         if (_history.length > 500) {
           _history = _history.sublist(0, 500);
@@ -388,6 +557,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
       setState(() {
         _activeTabIndex = index;
       });
+      _syncForegroundServiceForCurrentUrl();
     }
   }
 
@@ -603,11 +773,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           child: InAppWebView(
                             key: tab.webViewKey,
                             initialSettings: InAppWebViewSettings(
-                              userAgent: tab.isYouTubeMusicTab
-                                  ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-                                  : "",
+                              userAgent: _desktopChromeUserAgent,
                               useHybridComposition: false,
                               mediaPlaybackRequiresUserGesture: false,
+                              allowsInlineMediaPlayback: true,
                             ),
                             onWebViewCreated: (controller) {
                               _webViewControllers[tab.id] = controller;
@@ -664,16 +833,21 @@ class _BrowserScreenState extends State<BrowserScreen> {
                                   }
                                 }
                               }
+                              _syncForegroundServiceForCurrentUrl();
                             },
                             onLoadStart: (controller, url) {
                               if (mounted) {
                                 setState(() {
+                                  if (url != null) {
+                                    tab.url = url.toString();
+                                  }
                                   tab.title = "Loading...";
                                   tab.favicon = null;
                                   tab.dominantColor = null;
                                   if (index == _activeTabIndex) _progress = 0.0;
                                 });
                               }
+                              _syncForegroundServiceForCurrentUrl();
                             },
                             onProgressChanged: (controller, progress) {
                               if (mounted) {
@@ -692,6 +866,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
                                   setState(() => _isNavBarVisible = true);
                               }
                               _lastWebViewScrollY = y.toDouble();
+                            },
+                            onUpdateVisitedHistory: (controller, url, _) {
+                              if (url != null) {
+                                tab.url = url.toString();
+                              }
+                              _syncForegroundServiceForCurrentUrl();
                             },
                           ),
                         );
@@ -936,7 +1116,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
-        title: const Text("Add Favourite", style: TextStyle(color: Colors.white)),
+        title:
+            const Text("Add Favourite", style: TextStyle(color: Colors.white)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1620,7 +1801,8 @@ class HomeScreenContent extends StatelessWidget {
                               title: const Text("Remove Favourite?",
                                   style: TextStyle(color: Colors.white)),
                               content: Text("Delete '${fav.title}'?",
-                                  style: const TextStyle(color: Colors.white70)),
+                                  style:
+                                      const TextStyle(color: Colors.white70)),
                               actions: [
                                 TextButton(
                                   child: const Text("Cancel"),
@@ -2323,8 +2505,18 @@ class HistoryScreen extends StatelessWidget {
     if (dateOnly == today) return 'Today';
     if (dateOnly == yesterday) return 'Yesterday';
     final months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
     return '${months[date.month - 1]} ${date.day}, ${date.year}';
   }
@@ -2495,8 +2687,7 @@ class HistoryScreen extends StatelessWidget {
                                     child: Text(
                                       dateHeader,
                                       style: TextStyle(
-                                        color:
-                                            Colors.white.withOpacity(0.5),
+                                        color: Colors.white.withOpacity(0.5),
                                         fontSize: 13,
                                         fontWeight: FontWeight.w600,
                                         letterSpacing: 1,
@@ -2517,23 +2708,20 @@ class HistoryScreen extends StatelessWidget {
                                     return Dismissible(
                                       key: ValueKey(
                                           '${item.url}_${item.visitedAt.millisecondsSinceEpoch}'),
-                                      direction:
-                                          DismissDirection.endToStart,
+                                      direction: DismissDirection.endToStart,
                                       background: Container(
-                                        alignment:
-                                            Alignment.centerRight,
+                                        alignment: Alignment.centerRight,
                                         padding:
                                             const EdgeInsets.only(right: 20),
-                                        margin: const EdgeInsets.only(
-                                            bottom: 8),
+                                        margin:
+                                            const EdgeInsets.only(bottom: 8),
                                         decoration: BoxDecoration(
-                                          color: Colors.redAccent
-                                              .withOpacity(0.2),
+                                          color:
+                                              Colors.redAccent.withOpacity(0.2),
                                           borderRadius:
                                               BorderRadius.circular(12),
                                         ),
-                                        child: const Icon(
-                                            Icons.delete_outline,
+                                        child: const Icon(Icons.delete_outline,
                                             color: Colors.redAccent),
                                       ),
                                       onDismissed: (_) =>
@@ -2542,8 +2730,7 @@ class HistoryScreen extends StatelessWidget {
                                         padding:
                                             const EdgeInsets.only(bottom: 8),
                                         child: GestureDetector(
-                                          onTap: () =>
-                                              onLoadUrl(item.url),
+                                          onTap: () => onLoadUrl(item.url),
                                           child: GlassWidget(
                                             borderRadius:
                                                 BorderRadius.circular(12),
@@ -2560,27 +2747,23 @@ class HistoryScreen extends StatelessWidget {
                                                       item.iconUrl,
                                                       width: 28,
                                                       height: 28,
-                                                      errorBuilder: (c, e,
-                                                              s) =>
+                                                      errorBuilder: (c, e, s) =>
                                                           Container(
                                                         width: 28,
                                                         height: 28,
                                                         decoration:
                                                             BoxDecoration(
-                                                          color: Colors
-                                                              .white
-                                                              .withOpacity(
-                                                                  0.1),
+                                                          color: Colors.white
+                                                              .withOpacity(0.1),
                                                           borderRadius:
                                                               BorderRadius
-                                                                  .circular(
-                                                                      6),
+                                                                  .circular(6),
                                                         ),
                                                         child: const Icon(
                                                             Icons.public,
                                                             size: 18,
-                                                            color: Colors
-                                                                .white54),
+                                                            color:
+                                                                Colors.white54),
                                                       ),
                                                     ),
                                                   ),
@@ -2595,41 +2778,35 @@ class HistoryScreen extends StatelessWidget {
                                                           item.title,
                                                           style:
                                                               const TextStyle(
-                                                            color:
-                                                                Colors.white,
+                                                            color: Colors.white,
                                                             fontSize: 14,
                                                             fontWeight:
-                                                                FontWeight
-                                                                    .w500,
+                                                                FontWeight.w500,
                                                           ),
                                                           maxLines: 1,
-                                                          overflow:
-                                                              TextOverflow
-                                                                  .ellipsis,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
                                                         ),
                                                         const SizedBox(
                                                             height: 2),
                                                         Text(
                                                           host,
                                                           style: TextStyle(
-                                                            color: Colors
-                                                                .white
+                                                            color: Colors.white
                                                                 .withOpacity(
                                                                     0.4),
                                                             fontSize: 12,
                                                           ),
                                                           maxLines: 1,
-                                                          overflow:
-                                                              TextOverflow
-                                                                  .ellipsis,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
                                                         ),
                                                       ],
                                                     ),
                                                   ),
                                                   const SizedBox(width: 8),
                                                   Text(
-                                                    _formatTime(
-                                                        item.visitedAt),
+                                                    _formatTime(item.visitedAt),
                                                     style: TextStyle(
                                                       color: Colors.white
                                                           .withOpacity(0.3),

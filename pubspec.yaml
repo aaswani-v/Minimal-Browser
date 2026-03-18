@@ -28,6 +28,7 @@ dependencies:
   palette_generator: ^0.3.3
   shared_preferences: ^2.2.3
   flutter_inappwebview: ^6.0.0
+  flutter_foreground_task: ^8.17.0
 
 dev_dependencies:
   flutter_test:
