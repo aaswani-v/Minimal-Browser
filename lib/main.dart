@@ -53,9 +53,17 @@ class Favourite {
   Favourite({required this.title, required this.url});
 
   String get iconUrl {
-    final domain = Uri.parse(url).host;
-    return 'https://www.google.com/s2/favicons?domain=$domain&sz=128';
+    try {
+      final domain = Uri.parse(url).host;
+      return 'https://www.google.com/s2/favicons?domain=$domain&sz=128';
+    } catch (_) {
+      return '';
+    }
   }
+
+  Map<String, dynamic> toJson() => {'title': title, 'url': url};
+  static Favourite fromJson(Map<String, dynamic> json) =>
+      Favourite(title: json['title'], url: json['url']);
 }
 
 // MODIFIED: Added toJson and fromJson for saving custom AI links
@@ -72,6 +80,36 @@ class QuickAILink {
   Map<String, dynamic> toJson() => {'name': name, 'url': url};
   static QuickAILink fromJson(Map<String, dynamic> json) =>
       QuickAILink(name: json['name'], url: json['url']);
+}
+
+class HistoryItem {
+  final String title;
+  final String url;
+  final DateTime visitedAt;
+
+  HistoryItem(
+      {required this.title, required this.url, required this.visitedAt});
+
+  String get iconUrl {
+    try {
+      final domain = Uri.parse(url).host;
+      return 'https://www.google.com/s2/favicons?domain=$domain&sz=64';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'url': url,
+        'visitedAt': visitedAt.toIso8601String(),
+      };
+
+  static HistoryItem fromJson(Map<String, dynamic> json) => HistoryItem(
+        title: json['title'],
+        url: json['url'],
+        visitedAt: DateTime.parse(json['visitedAt']),
+      );
 }
 
 void main() {
@@ -107,6 +145,9 @@ class BrowserScreen extends StatefulWidget {
 class _BrowserScreenState extends State<BrowserScreen> {
   // --- Minimalist Mode ---
   bool _isMinimalistMode = false;
+  // --- History ---
+  List<HistoryItem> _history = [];
+  bool _isHistoryVisible = false;
   final Map<int, InAppWebViewController> _webViewControllers = {};
   List<BrowserTab> _tabs = [];
   int _activeTabIndex = 0;
@@ -131,7 +172,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   // --- Home Screen Data ---
   List<Note> _notes = [];
   List<TodoItem> _todos = [];
-  final List<Favourite> _favourites = [
+  List<Favourite> _favourites = [
     Favourite(title: "YouTube", url: "https://youtube.com"),
     Favourite(title: "Reddit", url: "https://reddit.com"),
     Favourite(title: "Wikipedia", url: "https://wikipedia.org"),
@@ -201,6 +242,20 @@ class _BrowserScreenState extends State<BrowserScreen> {
             .map((l) => QuickAILink.fromJson(l))
             .toList();
       }
+
+      // Load history
+      final historyString = prefs.getString('browser_history') ?? '[]';
+      _history = (jsonDecode(historyString) as List)
+          .map((h) => HistoryItem.fromJson(h))
+          .toList();
+
+      // Load favourites
+      final favouritesString = prefs.getString('browser_favourites');
+      if (favouritesString != null) {
+        _favourites = (jsonDecode(favouritesString) as List)
+            .map((f) => Favourite.fromJson(f))
+            .toList();
+      }
     });
   }
 
@@ -213,6 +268,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
     // MODIFIED: Save custom AI links
     await prefs.setString('quick_ai_links',
         jsonEncode(_quickAILinks.map((l) => l.toJson()).toList()));
+    // Save history
+    await prefs.setString('browser_history',
+        jsonEncode(_history.map((h) => h.toJson()).toList()));
+    // Save favourites
+    await prefs.setString('browser_favourites',
+        jsonEncode(_favourites.map((f) => f.toJson()).toList()));
   }
 
   void _addNote(String content) {
@@ -239,6 +300,19 @@ class _BrowserScreenState extends State<BrowserScreen> {
     _saveData();
   }
 
+  void _addFavourite(String title, String url) {
+    if (title.isNotEmpty && url.isNotEmpty) {
+      String finalUrl = url.startsWith('http') ? url : 'https://$url';
+      setState(() => _favourites.add(Favourite(title: title, url: finalUrl)));
+      _saveData();
+    }
+  }
+
+  void _removeFavourite(Favourite favourite) {
+    setState(() => _favourites.remove(favourite));
+    _saveData();
+  }
+
   // ADDED: Method to add a new AI link
   void _addAILink(String name, String url) {
     if (name.isNotEmpty && url.isNotEmpty) {
@@ -247,6 +321,34 @@ class _BrowserScreenState extends State<BrowserScreen> {
       setState(() => _quickAILinks.add(QuickAILink(name: name, url: finalUrl)));
       _saveData();
     }
+  }
+
+  void _addHistoryItem(String title, String url) {
+    if (url.startsWith('http')) {
+      setState(() {
+        // Remove duplicate if exists (most recent visit takes precedence)
+        _history.removeWhere((h) => h.url == url);
+        _history.insert(
+            0,
+            HistoryItem(
+                title: title, url: url, visitedAt: DateTime.now()));
+        // Keep history to a reasonable limit
+        if (_history.length > 500) {
+          _history = _history.sublist(0, 500);
+        }
+      });
+      _saveData();
+    }
+  }
+
+  void _removeHistoryItem(int index) {
+    setState(() => _history.removeAt(index));
+    _saveData();
+  }
+
+  void _clearHistory() {
+    setState(() => _history.clear());
+    _saveData();
   }
 
   void _handleHomeScroll() {
@@ -550,6 +652,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
                                       tab.isYouTubeMusicTab = true;
                                     }
                                   });
+                                  // Track history
+                                  _addHistoryItem(
+                                    title ?? _getHostname(url.toString()),
+                                    url.toString(),
+                                  );
                                   if (tab.isYouTubeMusicTab) {
                                     // A short delay helps ensure the player bar is loaded
                                     Future.delayed(const Duration(seconds: 1),
@@ -602,6 +709,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         onToggleTodo: _toggleTodo,
                         onLoadUrl: _loadUrl,
                         onAddAILink: _showAddAIDialog,
+                        onAddFavouriteTap: _showAddFavouriteDialog,
+                        onRemoveFavourite: _removeFavourite,
                         isMinimalistMode: _isMinimalistMode,
                         onToggleMinimalistMode: () async {
                           setState(
@@ -609,6 +718,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
                           final prefs = await SharedPreferences.getInstance();
                           await prefs.setBool(
                               'minimalist_mode', _isMinimalistMode);
+                        },
+                        onHistoryTap: () {
+                          setState(() => _isHistoryVisible = true);
                         },
                         onOpenMusic: () {
                           _addTab(
@@ -708,6 +820,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   },
                   onQuickNote: _showQuickNoteDialog,
                 ),
+              if (_isHistoryVisible)
+                HistoryScreen(
+                  history: _history,
+                  onClose: () => setState(() => _isHistoryVisible = false),
+                  onLoadUrl: (url) {
+                    setState(() => _isHistoryVisible = false);
+                    _loadUrl(url);
+                  },
+                  onRemoveItem: _removeHistoryItem,
+                  onClearAll: _clearHistory,
+                ),
             ],
           ),
         ),
@@ -798,6 +921,58 @@ class _BrowserScreenState extends State<BrowserScreen> {
             child: const Text("Add"),
             onPressed: () {
               _addAILink(nameController.text, urlController.text);
+              Navigator.of(context).pop();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAddFavouriteDialog() {
+    final TextEditingController titleController = TextEditingController();
+    final TextEditingController urlController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("Add Favourite", style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: titleController,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: "Title (e.g., Google)",
+                hintStyle: TextStyle(color: Colors.grey),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: urlController,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: "URL (e.g., google.com)",
+                hintStyle: TextStyle(color: Colors.grey),
+              ),
+              onSubmitted: (value) {
+                _addFavourite(titleController.text, value);
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            child: const Text("Cancel"),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+          TextButton(
+            child: const Text("Add"),
+            onPressed: () {
+              _addFavourite(titleController.text, urlController.text);
               Navigator.of(context).pop();
             },
           ),
@@ -1168,7 +1343,10 @@ class HomeScreenContent extends StatelessWidget {
   final ValueChanged<String> onLoadUrl;
   final VoidCallback onOpenMusic;
   final VoidCallback onAddAILink;
+  final VoidCallback onAddFavouriteTap;
+  final ValueChanged<Favourite> onRemoveFavourite;
   final bool isMinimalistMode;
+  final VoidCallback onHistoryTap;
   final VoidCallback onToggleMinimalistMode;
   final String songTitle;
   final String songArtist;
@@ -1191,7 +1369,10 @@ class HomeScreenContent extends StatelessWidget {
       required this.onLoadUrl,
       required this.onOpenMusic,
       required this.onAddAILink,
+      required this.onAddFavouriteTap,
+      required this.onRemoveFavourite,
       required this.isMinimalistMode,
+      required this.onHistoryTap,
       required this.onToggleMinimalistMode,
       required this.songTitle,
       required this.songArtist,
@@ -1211,46 +1392,85 @@ class HomeScreenContent extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 8),
-            // Minimalist mode toggle button
-            Align(
-              alignment: Alignment.topRight,
-              child: GestureDetector(
-                onTap: onToggleMinimalistMode,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF706C6C).withOpacity(0.10),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.18),
-                      width: 1.0,
+            // History + Minimalist mode buttons row
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // History button (left side)
+                GestureDetector(
+                  onTap: onHistoryTap,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF706C6C).withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.18),
+                        width: 1.0,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.history,
+                          color: Colors.white.withOpacity(0.7),
+                          size: 16,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          "History",
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.7),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        isMinimalistMode
-                            ? Icons.widgets_outlined
-                            : Icons.visibility_off_outlined,
-                        color: Colors.white.withOpacity(0.7),
-                        size: 16,
+                ),
+                // Minimalist mode toggle button (right side)
+                GestureDetector(
+                  onTap: onToggleMinimalistMode,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF706C6C).withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.18),
+                        width: 1.0,
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isMinimalistMode ? "Show" : "Hide",
-                        style: TextStyle(
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isMinimalistMode
+                              ? Icons.widgets_outlined
+                              : Icons.visibility_off_outlined,
                           color: Colors.white.withOpacity(0.7),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
+                          size: 16,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        Text(
+                          isMinimalistMode ? "Show" : "Hide",
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.7),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
+              ],
             ),
             const SizedBox(height: 16),
             // Content area with animated visibility
@@ -1259,7 +1479,7 @@ class HomeScreenContent extends StatelessWidget {
               crossFadeState: isMinimalistMode
                   ? CrossFadeState.showSecond
                   : CrossFadeState.showFirst,
-              firstChild: _buildFullContent(),
+              firstChild: _buildFullContent(context),
               secondChild: _buildMinimalistContent(),
               sizeCurve: Curves.easeInOut,
             ),
@@ -1295,7 +1515,7 @@ class HomeScreenContent extends StatelessWidget {
     );
   }
 
-  Widget _buildFullContent() {
+  Widget _buildFullContent(BuildContext context) {
     return Column(
       children: [
         Row(
@@ -1390,8 +1610,35 @@ class HomeScreenContent extends StatelessWidget {
                   physics: const NeverScrollableScrollPhysics(),
                   children: [
                     ...favourites.map((fav) => _FavouriteButton(
-                        favourite: fav, onTap: () => onLoadUrl(fav.url))),
-                    _FavouriteButton(icon: Icons.add, onTap: () {}),
+                        favourite: fav,
+                        onTap: () => onLoadUrl(fav.url),
+                        onLongPress: () {
+                          showDialog(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              backgroundColor: const Color(0xFF1E1E1E),
+                              title: const Text("Remove Favourite?",
+                                  style: TextStyle(color: Colors.white)),
+                              content: Text("Delete '${fav.title}'?",
+                                  style: const TextStyle(color: Colors.white70)),
+                              actions: [
+                                TextButton(
+                                  child: const Text("Cancel"),
+                                  onPressed: () => Navigator.pop(context),
+                                ),
+                                TextButton(
+                                  child: const Text("Remove",
+                                      style: TextStyle(color: Colors.red)),
+                                  onPressed: () {
+                                    onRemoveFavourite(fav);
+                                    Navigator.pop(context);
+                                  },
+                                ),
+                              ],
+                            ),
+                          );
+                        })),
+                    _FavouriteButton(icon: Icons.add, onTap: onAddFavouriteTap),
                   ],
                 )
               ],
@@ -1808,12 +2055,15 @@ class _FavouriteButton extends StatelessWidget {
   final Favourite? favourite;
   final IconData? icon;
   final VoidCallback onTap;
-  const _FavouriteButton({this.favourite, this.icon, required this.onTap});
+  final VoidCallback? onLongPress;
+  const _FavouriteButton(
+      {this.favourite, this.icon, required this.onTap, this.onLongPress});
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Container(
         decoration: BoxDecoration(
           color: Colors.black.withOpacity(0.4),
@@ -2046,6 +2296,365 @@ class _SearchListItem extends StatelessWidget {
     );
   }
 }
-// " and I would like to get some help with it.
-// I have the following query:
-// now the search screen is not closing on tap... it's like a solid screen over the webview, only back gesture is working
+
+// --- History Screen ---
+class HistoryScreen extends StatelessWidget {
+  final List<HistoryItem> history;
+  final VoidCallback onClose;
+  final ValueChanged<String> onLoadUrl;
+  final ValueChanged<int> onRemoveItem;
+  final VoidCallback onClearAll;
+
+  const HistoryScreen({
+    super.key,
+    required this.history,
+    required this.onClose,
+    required this.onLoadUrl,
+    required this.onRemoveItem,
+    required this.onClearAll,
+  });
+
+  String _formatDateHeader(DateTime date) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final dateOnly = DateTime(date.year, date.month, date.day);
+
+    if (dateOnly == today) return 'Today';
+    if (dateOnly == yesterday) return 'Yesterday';
+    final months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    return '${months[date.month - 1]} ${date.day}, ${date.year}';
+  }
+
+  String _formatTime(DateTime date) {
+    final hour = date.hour % 12 == 0 ? 12 : date.hour % 12;
+    final minute = date.minute.toString().padLeft(2, '0');
+    final period = date.hour < 12 ? 'AM' : 'PM';
+    return '$hour:$minute $period';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Group history by date
+    final Map<String, List<MapEntry<int, HistoryItem>>> grouped = {};
+    for (int i = 0; i < history.length; i++) {
+      final header = _formatDateHeader(history[i].visitedAt);
+      grouped.putIfAbsent(header, () => []);
+      grouped[header]!.add(MapEntry(i, history[i]));
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onClose,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                child: Container(
+                  color: Colors.black.withOpacity(0.60),
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  // Header
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          GestureDetector(
+                            onTap: onClose,
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(Icons.arrow_back,
+                                  color: Colors.white, size: 20),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          const Text(
+                            'Browsing History',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (history.isNotEmpty)
+                        GestureDetector(
+                          onTap: () {
+                            showDialog(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                backgroundColor: const Color(0xFF1E1E1E),
+                                title: const Text('Clear History',
+                                    style: TextStyle(color: Colors.white)),
+                                content: const Text(
+                                    'Are you sure you want to clear all browsing history?',
+                                    style: TextStyle(color: Colors.white70)),
+                                actions: [
+                                  TextButton(
+                                    child: const Text('Cancel'),
+                                    onPressed: () => Navigator.of(ctx).pop(),
+                                  ),
+                                  TextButton(
+                                    child: const Text('Clear',
+                                        style:
+                                            TextStyle(color: Colors.redAccent)),
+                                    onPressed: () {
+                                      Navigator.of(ctx).pop();
+                                      onClearAll();
+                                    },
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                  color: Colors.redAccent.withOpacity(0.3)),
+                            ),
+                            child: const Text(
+                              'Clear All',
+                              style: TextStyle(
+                                color: Colors.redAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  // History List
+                  Expanded(
+                    child: history.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.history,
+                                    color: Colors.white.withOpacity(0.15),
+                                    size: 64),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No history yet',
+                                  style: TextStyle(
+                                    color: Colors.white.withOpacity(0.3),
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w400,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Websites you visit will appear here',
+                                  style: TextStyle(
+                                    color: Colors.white.withOpacity(0.2),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            itemCount: grouped.length,
+                            itemBuilder: (context, sectionIndex) {
+                              final dateHeader =
+                                  grouped.keys.elementAt(sectionIndex);
+                              final items = grouped[dateHeader]!;
+
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                        top: 12, bottom: 8),
+                                    child: Text(
+                                      dateHeader,
+                                      style: TextStyle(
+                                        color:
+                                            Colors.white.withOpacity(0.5),
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        letterSpacing: 1,
+                                      ),
+                                    ),
+                                  ),
+                                  ...items.map((entry) {
+                                    final globalIndex = entry.key;
+                                    final item = entry.value;
+                                    String host;
+                                    try {
+                                      host = Uri.parse(item.url)
+                                          .host
+                                          .replaceAll('www.', '');
+                                    } catch (_) {
+                                      host = item.url;
+                                    }
+                                    return Dismissible(
+                                      key: ValueKey(
+                                          '${item.url}_${item.visitedAt.millisecondsSinceEpoch}'),
+                                      direction:
+                                          DismissDirection.endToStart,
+                                      background: Container(
+                                        alignment:
+                                            Alignment.centerRight,
+                                        padding:
+                                            const EdgeInsets.only(right: 20),
+                                        margin: const EdgeInsets.only(
+                                            bottom: 8),
+                                        decoration: BoxDecoration(
+                                          color: Colors.redAccent
+                                              .withOpacity(0.2),
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                        ),
+                                        child: const Icon(
+                                            Icons.delete_outline,
+                                            color: Colors.redAccent),
+                                      ),
+                                      onDismissed: (_) =>
+                                          onRemoveItem(globalIndex),
+                                      child: Padding(
+                                        padding:
+                                            const EdgeInsets.only(bottom: 8),
+                                        child: GestureDetector(
+                                          onTap: () =>
+                                              onLoadUrl(item.url),
+                                          child: GlassWidget(
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            child: Padding(
+                                              padding:
+                                                  const EdgeInsets.all(14.0),
+                                              child: Row(
+                                                children: [
+                                                  ClipRRect(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            6),
+                                                    child: Image.network(
+                                                      item.iconUrl,
+                                                      width: 28,
+                                                      height: 28,
+                                                      errorBuilder: (c, e,
+                                                              s) =>
+                                                          Container(
+                                                        width: 28,
+                                                        height: 28,
+                                                        decoration:
+                                                            BoxDecoration(
+                                                          color: Colors
+                                                              .white
+                                                              .withOpacity(
+                                                                  0.1),
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(
+                                                                      6),
+                                                        ),
+                                                        child: const Icon(
+                                                            Icons.public,
+                                                            size: 18,
+                                                            color: Colors
+                                                                .white54),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 14),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        Text(
+                                                          item.title,
+                                                          style:
+                                                              const TextStyle(
+                                                            color:
+                                                                Colors.white,
+                                                            fontSize: 14,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w500,
+                                                          ),
+                                                          maxLines: 1,
+                                                          overflow:
+                                                              TextOverflow
+                                                                  .ellipsis,
+                                                        ),
+                                                        const SizedBox(
+                                                            height: 2),
+                                                        Text(
+                                                          host,
+                                                          style: TextStyle(
+                                                            color: Colors
+                                                                .white
+                                                                .withOpacity(
+                                                                    0.4),
+                                                            fontSize: 12,
+                                                          ),
+                                                          maxLines: 1,
+                                                          overflow:
+                                                              TextOverflow
+                                                                  .ellipsis,
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    _formatTime(
+                                                        item.visitedAt),
+                                                    style: TextStyle(
+                                                      color: Colors.white
+                                                          .withOpacity(0.3),
+                                                      fontSize: 11,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }),
+                                ],
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
