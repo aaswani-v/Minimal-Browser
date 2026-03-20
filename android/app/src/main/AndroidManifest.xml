@@ -18,7 +18,8 @@
             android:name="io.flutter.embedding.android.EnableImpeller"
             android:value="false" />
         <service
-            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:name=".MediaPlaybackService"
+            android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
         <activity
