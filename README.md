@@ -1,4 +1,4 @@
-# Nothing Browser 🌌
+# Nothing Browser
 
 **A beautifully minimal, distraction-free browser built for focus.**
 
@@ -6,7 +6,7 @@ The internet is loud. We built **Nothing Browser** to be quiet. It strips away t
 
 Whether you're researching, working, or just exploring, Nothing Browser gets out of your way so you can focus on what actually matters. 
 
-## ✨ Why Nothing?
+## Why Nothing?
 
 - **Distraction-Free Dashboard:** Your home screen has exactly what you need and nothing you don't—quick notes, a simple to-do list, and your favorite AI tools.
 - **Built-in Soundtrack:** Experience seamless YouTube Music integration right on your dashboard, with background audio support so the music never stops while you browse.
